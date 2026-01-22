@@ -8,19 +8,27 @@ Production-style distributed training framework for decoder-only transformer mod
 - Local K8s via kind and IndexedJob for multi-pod DDP; MLflow for params/metrics/artifacts; checkpoints are resumable.
 
 ## Quickstart (v0.1 skeleton)
-1) Install deps (uses `uv` by default):
+1) Install deps (uses `uv` with dev extras for tooling):
    ```bash
-   uv sync
+   uv sync --extra dev
    ```
-2) Lint & type check:
+2) Install pre-commit hooks:
+   ```bash
+   pre-commit install
+   ```
+3) Format code:
+   ```bash
+   make format
+   ```
+3) Lint & type check:
    ```bash
    make lint
    ```
-3) Run tests:
+4) Run tests:
    ```bash
    make test
    ```
-4) CLI smoke:
+5) CLI smoke:
    ```bash
    python -m llmtrain --help
    ```
