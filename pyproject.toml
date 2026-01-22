@@ -1,0 +1,10 @@
+[project]
+name = "local-llm-training-k8s"
+version = "0.0.0"
+description = "Training pipeline for distributed decoder-only transformer on local Kubernetes"
+requires-python = "==3.11.*"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
