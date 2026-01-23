@@ -72,3 +72,43 @@ class TrainerConfig(BaseModel):
     save_every_steps: int = Field(..., ge=1)
 
     trainer_config = ConfigDict(extra="forbid")
+
+
+class DDPConfig(BaseModel):
+    """Distributed data-parallel runtime hints and overrides."""
+
+    enabled: bool
+    backend: Literal["gloo"] = "gloo"
+    init_method: Literal["env://"] = "env://"
+    timeout_sec: int = Field(..., ge=1)
+    find_unused_parameters: bool = False
+    rank: int | None = None
+    world_size: int | None = None
+    local_rank: int | None = None
+    master_addr: str | None = None
+    master_port: int | None = None
+
+    ddp_config = ConfigDict(extra="forbid")
+
+
+class MLflowConfig(BaseModel):
+    """MLflow tracking integration options."""
+
+    enabled: bool
+    tracking_uri: str
+    experiment: str
+    run_name: str | None = None
+    log_models: bool = False
+
+    mlflow_config = ConfigDict(extra="forbid")
+
+
+class LoggingConfig(BaseModel):
+    """Structured logging settings for stdout/file output."""
+
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+    json_output: bool = Field(True, alias="json")
+    log_to_file: bool = True
+    file_name: str = "train.log"
+
+    logging_config = ConfigDict(extra="forbid", populate_by_name=True)
