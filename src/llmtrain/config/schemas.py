@@ -29,7 +29,7 @@ class ModelConfig(BaseModel):
     d_ff: int = Field(..., ge=1)
     dropout: float = Field(..., ge=0.0, lt=1.0)
     tie_embeddings: bool = True
-    vocab_size: str | None = None
+    vocab_size: int | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -40,3 +40,35 @@ class ModelConfig(BaseModel):
         if self.d_ff < self.d_model:
             raise ValueError("d_ff must be greater than or equal to d_model")
         return self
+
+
+class DataConfig(BaseModel):
+    """Dataset paths, splits, and optional HuggingFace overrides."""
+
+    name: str
+    cache_dir: str
+    num_workers: int = Field(..., ge=0)
+    train_split: str
+    val_split: str
+    dataset_name: str | None = None
+    dataset_config: str | None = None
+    text_column: str | None = None
+
+    data_config = ConfigDict(extra="forbid")
+
+
+class TrainerConfig(BaseModel):
+    """Training loop pacing and logging controls."""
+
+    max_steps: int = Field(..., ge=1)
+    micro_batch_size: int = Field(..., ge=1)
+    grad_accum_steps: int = Field(..., ge=1)
+    lr: float = Field(..., gt=0.0)
+    weight_decay: float = Field(..., ge=0.0)
+    warmup_steps: int = Field(..., ge=0)
+    max_grad_norm: float = Field(..., gt=0.0)
+    log_every_steps: int = Field(..., ge=1)
+    eval_every_steps: int = Field(..., ge=1)
+    save_every_steps: int = Field(..., ge=1)
+
+    trainer_config = ConfigDict(extra="forbid")
