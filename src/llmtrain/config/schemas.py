@@ -5,7 +5,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class RunConfig(BaseModel):
+class RunSectionConfig(BaseModel):
     """Basic run-level configuration."""
 
     name: str
@@ -14,7 +14,7 @@ class RunConfig(BaseModel):
     deterministic: bool = True
     notes: str | None = None
 
-    model_config = ConfigDict(extra="forbid")
+    run_config = ConfigDict(extra="forbid")
 
 
 class ModelConfig(BaseModel):
@@ -112,3 +112,30 @@ class LoggingConfig(BaseModel):
     file_name: str = "train.log"
 
     logging_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class OutputConfig(BaseModel):
+    """Output-related paths and persistence toggles."""
+
+    root_dir: str = "runs"
+    run_id: str | None = None
+    save_config_copy: bool = True
+    save_meta_json: bool = True
+
+    output_config = ConfigDict(extra="forbid")
+
+
+class RunConfig(BaseModel):
+    """Top-level schema that ties every section into one executable run."""
+
+    schema_version: int = 1
+    run: RunSectionConfig
+    model: ModelConfig
+    data: DataConfig
+    trainer: TrainerConfig
+    ddp: DDPConfig
+    mlflow: MLflowConfig
+    logging: LoggingConfig
+    output: OutputConfig
+
+    run_config = ConfigDict(extra="forbid")
