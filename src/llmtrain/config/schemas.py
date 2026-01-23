@@ -14,7 +14,7 @@ class RunSectionConfig(BaseModel):
     deterministic: bool = True
     notes: str | None = None
 
-    run_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
 
 class ModelConfig(BaseModel):
@@ -54,7 +54,7 @@ class DataConfig(BaseModel):
     dataset_config: str | None = None
     text_column: str | None = None
 
-    data_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
 
 class TrainerConfig(BaseModel):
@@ -71,7 +71,7 @@ class TrainerConfig(BaseModel):
     eval_every_steps: int = Field(..., ge=1)
     save_every_steps: int = Field(..., ge=1)
 
-    trainer_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
 
 class DDPConfig(BaseModel):
@@ -88,7 +88,7 @@ class DDPConfig(BaseModel):
     master_addr: str | None = None
     master_port: int | None = None
 
-    ddp_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
 
 class MLflowConfig(BaseModel):
@@ -100,7 +100,7 @@ class MLflowConfig(BaseModel):
     run_name: str | None = None
     log_models: bool = False
 
-    mlflow_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
 
 class LoggingConfig(BaseModel):
@@ -111,7 +111,7 @@ class LoggingConfig(BaseModel):
     log_to_file: bool = True
     file_name: str = "train.log"
 
-    logging_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
 class OutputConfig(BaseModel):
@@ -122,7 +122,7 @@ class OutputConfig(BaseModel):
     save_config_copy: bool = True
     save_meta_json: bool = True
 
-    output_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
 
 class RunConfig(BaseModel):
@@ -138,4 +138,4 @@ class RunConfig(BaseModel):
     logging: LoggingConfig
     output: OutputConfig
 
-    run_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
