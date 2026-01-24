@@ -1,6 +1,13 @@
 """Shared utilities for llmtrain."""
 
 from llmtrain.utils.logging import configure_logging
+from llmtrain.utils.run_dir import create_run_directory, write_resolved_config
 from llmtrain.utils.run_id import generate_run_id, slugify_run_name
 
-__all__ = ["configure_logging", "generate_run_id", "slugify_run_name"]
+__all__ = [
+    "configure_logging",
+    "create_run_directory",
+    "generate_run_id",
+    "slugify_run_name",
+    "write_resolved_config",
+]
