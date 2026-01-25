@@ -5,16 +5,47 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 import yaml
 
 from llmtrain import __version__
 from llmtrain.config.loader import ConfigLoadError, load_and_validate_config
+from llmtrain.config.schemas import LoggingConfig
 from llmtrain.utils.logging import configure_logging
 from llmtrain.utils.metadata import generate_meta, write_meta_json
 from llmtrain.utils.run_dir import create_run_directory, write_resolved_config
 from llmtrain.utils.run_id import generate_run_id
 from llmtrain.utils.summary import format_run_summary
+
+LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+}
+
+
+def _configure_logger(
+    config_logging: LoggingConfig,
+    *,
+    verbose: int,
+    log_dir: Path | None = None,
+) -> logging.Logger:
+    level = LOG_LEVELS.get(config_logging.level, logging.INFO)
+    if verbose > 0:
+        level = logging.DEBUG
+
+    file_name = config_logging.file_name
+    if log_dir is not None:
+        file_name = str(log_dir / file_name)
+
+    return configure_logging(
+        level=level,
+        json_output=config_logging.json_output,
+        log_to_file=config_logging.log_to_file,
+        file_name=file_name,
+    )
 
 
 def _emit_config_error(error: ConfigLoadError, *, json_output: bool) -> None:
@@ -90,10 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _handle_validate(args: argparse.Namespace) -> int:
     try:
-        load_and_validate_config(args.config)
+        config, _, _ = load_and_validate_config(args.config)
     except ConfigLoadError as exc:
         _emit_config_error(exc, json_output=args.json)
         return 2
+    _configure_logger(config.logging, verbose=args.verbose)
 
     if args.json:
         print(json.dumps({"status": "ok"}, indent=2))
@@ -108,6 +140,7 @@ def _handle_print_config(args: argparse.Namespace) -> int:
     except ConfigLoadError as exc:
         _emit_config_error(exc, json_output=args.json)
         return 2
+    _configure_logger(config.logging, verbose=args.verbose)
 
     payload = config.model_dump()
     if args.json:
@@ -127,6 +160,7 @@ def _handle_train(args: argparse.Namespace) -> int:
     root_dir = config.output.root_dir
     run_id = args.run_id or config.output.run_id or generate_run_id(config.run.name, root_dir)
     run_dir = create_run_directory(root_dir, run_id)
+    _configure_logger(config.logging, verbose=args.verbose, log_dir=run_dir / "logs")
 
     if config.output.save_config_copy:
         write_resolved_config(run_dir, config)
@@ -162,9 +196,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    level = logging.INFO if args.verbose == 0 else logging.DEBUG
-    logger = configure_logging(level=level)
-    logger.debug("llmtrain CLI invoked", extra={"argv": list(argv) if argv else []})
     if args.command == "validate":
         return _handle_validate(args)
     if args.command == "print-config":
@@ -172,5 +203,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "train":
         return _handle_train(args)
 
-    logger.error("Unknown command", extra={"command": args.command})
+    print(f"Unknown command: {args.command}", file=sys.stderr)
     return 1
