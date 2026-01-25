@@ -4,6 +4,7 @@ import subprocess
 from datetime import datetime, tzinfo
 from pathlib import Path
 
+import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
 import llmtrain.utils.run_id as run_id
@@ -26,6 +27,10 @@ def test_slugify_run_name_truncates() -> None:
     assert run_id.slugify_run_name(long_name) == "a" * 40
 
 
+def test_slugify_run_name_normalizes_separators() -> None:
+    assert run_id.slugify_run_name("  Foo---Bar___Baz  ") == "foo_bar_baz"
+
+
 def test_generate_run_id_format(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(run_id, "datetime", _FixedDatetime)
     monkeypatch.setattr(run_id, "_get_short_git_sha", lambda: "abc123")
@@ -42,6 +47,14 @@ def test_get_short_git_sha_fallback(monkeypatch: MonkeyPatch) -> None:
     assert run_id._get_short_git_sha() == "nogit"
 
 
+def test_get_short_git_sha_empty_stdout(monkeypatch: MonkeyPatch) -> None:
+    class _Result:
+        stdout = ""
+
+    monkeypatch.setattr(run_id.subprocess, "run", lambda *_args, **_kwargs: _Result())
+    assert run_id._get_short_git_sha() == "nogit"
+
+
 def test_generate_run_id_collision_suffix(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(run_id, "datetime", _FixedDatetime)
     monkeypatch.setattr(run_id, "_get_short_git_sha", lambda: "abc123")
@@ -51,3 +64,30 @@ def test_generate_run_id_collision_suffix(monkeypatch: MonkeyPatch, tmp_path: Pa
 
     resolved = run_id.generate_run_id("My Run", root_dir=tmp_path)
     assert resolved == f"{base_run_id}__01"
+
+
+def test_generate_run_id_collision_suffix_increments(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(run_id, "datetime", _FixedDatetime)
+    monkeypatch.setattr(run_id, "_get_short_git_sha", lambda: "abc123")
+
+    base_run_id = run_id.generate_run_id("My Run")
+    (tmp_path / base_run_id).mkdir(parents=True)
+    (tmp_path / f"{base_run_id}__01").mkdir(parents=True)
+
+    resolved = run_id.generate_run_id("My Run", root_dir=tmp_path)
+    assert resolved == f"{base_run_id}__02"
+
+
+def test_generate_run_id_collision_limit(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(run_id, "datetime", _FixedDatetime)
+    monkeypatch.setattr(run_id, "_get_short_git_sha", lambda: "abc123")
+
+    base_run_id = run_id.generate_run_id("My Run")
+    (tmp_path / base_run_id).mkdir(parents=True)
+    for suffix in range(1, 100):
+        (tmp_path / f"{base_run_id}__{suffix:02d}").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError):
+        run_id.generate_run_id("My Run", root_dir=tmp_path)

@@ -56,7 +56,7 @@ def _emit_config_error(error: ConfigLoadError, *, json_output: bool) -> None:
             "details": error.details,
             "errors": error.errors,
         }
-        print(json.dumps(payload, indent=2), file=sys.stderr)
+        print(json.dumps(payload, indent=2, default=str), file=sys.stderr)
         return
 
     print(f"Config error: {error.message}", file=sys.stderr)
