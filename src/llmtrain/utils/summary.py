@@ -92,9 +92,9 @@ def format_run_summary(
         "Model: "
         f"name={config.model.name} init={config.model.init} block_size={config.model.block_size} "
         f"d_model={config.model.d_model} n_layers={config.model.n_layers} "
-        "n_heads={config.model.n_heads} "
+        f"n_heads={config.model.n_heads} "
         f"d_ff={config.model.d_ff} dropout={config.model.dropout} "
-        "tie_embeddings={config.model.tie_embeddings} "
+        f"tie_embeddings={config.model.tie_embeddings} "
         f"vocab_size={config.model.vocab_size}"
     )
     data_summary = (
@@ -110,7 +110,7 @@ def format_run_summary(
         f"grad_accum_steps={config.trainer.grad_accum_steps} lr={config.trainer.lr} "
         f"weight_decay={config.trainer.weight_decay} warmup_steps={config.trainer.warmup_steps} "
         f"max_grad_norm={config.trainer.max_grad_norm} "
-        "log_every_steps={config.trainer.log_every_steps} "
+        f"log_every_steps={config.trainer.log_every_steps} "
         f"eval_every_steps={config.trainer.eval_every_steps} "
         f"save_every_steps={config.trainer.save_every_steps}"
     )
