@@ -1,0 +1,66 @@
+schema_version: 1
+run:
+  name: "ddp-mlflow-demo"
+  seed: 42
+  device: "cpu"
+  deterministic: true
+  notes: "Example with DDP overrides and MLflow run naming."
+model:
+  name: "tiny-transformer"
+  init: "random"
+  block_size: 128
+  d_model: 256
+  n_layers: 4
+  n_heads: 4
+  d_ff: 1024
+  dropout: 0.2
+  tie_embeddings: true
+  vocab_size: 32000
+data:
+  name: "local-text"
+  cache_dir: ".cache/datasets"
+  num_workers: 0
+  train_split: "train"
+  val_split: "validation"
+  dataset_name: null
+  dataset_config: null
+  text_column: null
+trainer:
+  max_steps: 500
+  micro_batch_size: 4
+  grad_accum_steps: 8
+  lr: 0.0005
+  weight_decay: 0.0
+  warmup_steps: 50
+  max_grad_norm: 1.0
+  log_every_steps: 5
+  eval_every_steps: 50
+  save_every_steps: 250
+ddp:
+  enabled: true
+  backend: "gloo"
+  init_method: "env://"
+  timeout_sec: 900
+  find_unused_parameters: false
+  rank: 0
+  world_size: 2
+  local_rank: 0
+  master_addr: "127.0.0.1"
+  master_port: 29500
+mlflow:
+  enabled: true
+  tracking_uri: "file:./mlruns"
+  experiment: "llm-train-k8s"
+  run_name: "ddp-demo-run"
+  log_models: false
+logging:
+  level: "DEBUG"
+  json_output: true
+  log_to_file: true
+  file_name: "train-ddp.log"
+output:
+  root_dir: "runs"
+  run_id: null
+  save_config_copy: true
+  save_meta_json: true
+

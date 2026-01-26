@@ -1,0 +1,66 @@
+schema_version: 1
+run:
+  name: "example-cpu-run"
+  seed: 1337
+  device: "cpu"
+  deterministic: true
+  notes: "Baseline example showing all config sections."
+model:
+  name: "tiny-transformer"
+  init: "random"
+  block_size: 256
+  d_model: 384
+  n_layers: 6
+  n_heads: 6
+  d_ff: 1536
+  dropout: 0.1
+  tie_embeddings: true
+  vocab_size: 50257
+data:
+  name: "toy-text"
+  cache_dir: ".cache/datasets"
+  num_workers: 2
+  train_split: "train"
+  val_split: "validation"
+  dataset_name: "wikitext"
+  dataset_config: "wikitext-2-raw-v1"
+  text_column: "text"
+trainer:
+  max_steps: 1000
+  micro_batch_size: 8
+  grad_accum_steps: 4
+  lr: 0.0003
+  weight_decay: 0.1
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  log_every_steps: 10
+  eval_every_steps: 100
+  save_every_steps: 500
+ddp:
+  enabled: false
+  backend: "gloo"
+  init_method: "env://"
+  timeout_sec: 1800
+  find_unused_parameters: false
+  rank: null
+  world_size: null
+  local_rank: null
+  master_addr: null
+  master_port: null
+mlflow:
+  enabled: true
+  tracking_uri: "file:./mlruns"
+  experiment: "llm-train-k8s"
+  run_name: null
+  log_models: false
+logging:
+  level: "INFO"
+  json_output: true
+  log_to_file: true
+  file_name: "train.log"
+output:
+  root_dir: "runs"
+  run_id: null
+  save_config_copy: true
+  save_meta_json: true
+

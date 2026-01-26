@@ -1,21 +1,26 @@
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
-    hooks:
-      - id: ruff
-      - id: ruff-format
   - repo: local
     hooks:
+      - id: ruff-format
+        name: ruff format (uv)
+        entry: uv run ruff format src tests
+        language: system
+        pass_filenames: false
+
+      - id: ruff
+        name: ruff check (uv)
+        entry: uv run ruff check src tests
+        language: system
+        pass_filenames: false
+
       - id: mypy
         name: mypy (uv)
         entry: uv run mypy --config-file=pyproject.toml src/llmtrain tests
         language: system
         pass_filenames: false
-  - repo: local
-    hooks:
+
       - id: pytest
-        name: pytest
-        entry: uv run python -m pytest
+        name: pytest (uv)
+        entry: uv run pytest
         language: system
         pass_filenames: false
-
