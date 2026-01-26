@@ -37,7 +37,10 @@ def test_load_and_validate_materializes_defaults(tmp_path: Path) -> None:
     assert resolved_path == config_path.resolve()
     assert config.run.seed == 1337
     assert config.model.block_size == 256
+    assert config.model.extra == {}
     assert config.data.cache_dir == ".cache/datasets"
+    assert config.data.extra == {}
+    assert config.trainer.extra == {}
     assert config.logging.json_output is True
     assert config.output.root_dir == "runs"
 
@@ -59,3 +62,17 @@ def test_load_and_validate_rejects_extra_fields(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigLoadError):
         load_and_validate_config(str(config_path))
+
+
+def test_load_and_validate_accepts_plugin_extras(tmp_path: Path) -> None:
+    payload = _minimal_config()
+    payload["model"] = {"name": "tiny-model", "extra": {"adapter": "dummy"}}
+    payload["data"] = {"name": "toy-data", "extra": {"dataset": "synthetic"}}
+    payload["trainer"] = {"extra": {"gradient_clip": 0.9}}
+    config_path = _write_config(tmp_path, payload)
+
+    config, _, _ = load_and_validate_config(str(config_path))
+
+    assert config.model.extra["adapter"] == "dummy"
+    assert config.data.extra["dataset"] == "synthetic"
+    assert config.trainer.extra["gradient_clip"] == 0.9
