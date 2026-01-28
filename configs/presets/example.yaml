@@ -6,7 +6,7 @@ run:
   deterministic: true
   notes: "Baseline example showing all config sections."
 model:
-  name: "tiny-transformer"
+  name: "dummy_gpt"
   init: "random"
   block_size: 256
   d_model: 384
@@ -17,7 +17,7 @@ model:
   tie_embeddings: true
   vocab_size: 50257
 data:
-  name: "toy-text"
+  name: "dummy_text"
   cache_dir: ".cache/datasets"
   num_workers: 2
   train_split: "train"

@@ -42,11 +42,12 @@ Production-style distributed training framework for decoder-only transformer mod
    ```
 8) Prepare a run (creates `runs/<run_id>/` with config + metadata):
    ```bash
-   python -m llmtrain train --config configs/presets/example.yaml --dry-run
+   python -m llmtrain train --config configs/presets/example.yaml
    ```
 
 Notes:
-- `train` currently prepares the run directory + summary output; training execution is wired in later milestones.
+- `train` currently runs a short dry-run loop (fake data) and emits summary output; full training is wired in later milestones.
+- `--dry-run` is accepted but currently a no-op (the dry-run loop always executes).
 - Use `--json` on any command for machine-readable output.
 
 ## Config structure (v0.2)

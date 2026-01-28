@@ -5,14 +5,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TypeVar
 
-T = TypeVar("T")
+from llmtrain.models.base import ModelAdapter
+
+T = TypeVar("T", bound=ModelAdapter)
 
 
 class RegistryError(ValueError):
     """Raised when a registry operation fails."""
 
 
-_MODEL_REGISTRY: dict[str, type[object]] = {}
+_MODEL_REGISTRY: dict[str, type[ModelAdapter]] = {}
 
 
 def _normalize_name(name: str) -> str:
@@ -38,7 +40,7 @@ def register_model(name: str) -> Callable[[type[T]], type[T]]:
     return decorator
 
 
-def get_model_adapter(name: str) -> type[object]:
+def get_model_adapter(name: str) -> type[ModelAdapter]:
     """Return the registered model adapter class for the given name."""
     normalized = _normalize_name(name)
     if normalized not in _MODEL_REGISTRY:

@@ -12,6 +12,7 @@ import yaml
 from llmtrain import __version__
 from llmtrain.config.loader import ConfigLoadError, load_and_validate_config
 from llmtrain.config.schemas import LoggingConfig
+from llmtrain.training.dry_run import run_dry_run
 from llmtrain.utils.logging import configure_logging
 from llmtrain.utils.metadata import generate_meta, write_meta_json
 from llmtrain.utils.run_dir import create_run_directory, write_resolved_config
@@ -160,7 +161,16 @@ def _handle_train(args: argparse.Namespace) -> int:
     root_dir = config.output.root_dir
     run_id = args.run_id or config.output.run_id or generate_run_id(config.run.name, root_dir)
     run_dir = create_run_directory(root_dir, run_id)
-    _configure_logger(config.logging, verbose=args.verbose, log_dir=run_dir / "logs")
+    logger = _configure_logger(config.logging, verbose=args.verbose, log_dir=run_dir / "logs")
+    dry_run_logger = logger
+    if args.json:
+        dry_run_logger = logging.getLogger("llmtrain.dry_run")
+        dry_run_logger.setLevel(logger.level)
+        dry_run_logger.handlers.clear()
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logger.handlers[0].formatter if logger.handlers else None)
+        dry_run_logger.addHandler(handler)
+        dry_run_logger.propagate = False
 
     if config.output.save_config_copy:
         write_resolved_config(run_dir, config)
@@ -173,20 +183,26 @@ def _handle_train(args: argparse.Namespace) -> int:
         )
         write_meta_json(run_dir, meta)
 
+    try:
+        dry_run_result = run_dry_run(config, logger=dry_run_logger)
+    except Exception as exc:
+        print(f"Dry-run failed: {exc}", file=sys.stderr)
+        return 1
+
     summary = format_run_summary(
         config=config,
         run_id=run_id,
         run_dir=run_dir,
         json_output=args.json,
+        resolved_model_adapter=dry_run_result.resolved_model_adapter,
+        resolved_data_module=dry_run_result.resolved_data_module,
+        dry_run_steps_executed=dry_run_result.steps_executed,
     )
 
     if args.json:
         print(json.dumps(summary, indent=2))
     else:
         print(summary)
-
-    if args.dry_run:
-        return 0
 
     return 0
 

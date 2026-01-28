@@ -5,14 +5,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TypeVar
 
-T = TypeVar("T")
+from llmtrain.data.base import DataModule
+
+T = TypeVar("T", bound=DataModule)
 
 
 class RegistryError(ValueError):
     """Raised when a registry operation fails."""
 
 
-_DATA_REGISTRY: dict[str, type[object]] = {}
+_DATA_REGISTRY: dict[str, type[DataModule]] = {}
 
 
 def _normalize_name(name: str) -> str:
@@ -38,7 +40,7 @@ def register_data_module(name: str) -> Callable[[type[T]], type[T]]:
     return decorator
 
 
-def get_data_module(name: str) -> type[object]:
+def get_data_module(name: str) -> type[DataModule]:
     """Return the registered data module class for the given name."""
     normalized = _normalize_name(name)
     if normalized not in _DATA_REGISTRY:

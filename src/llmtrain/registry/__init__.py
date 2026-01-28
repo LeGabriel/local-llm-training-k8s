@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from importlib import import_module
 
-MODEL_REGISTRY_MODULES: tuple[str, ...] = ()
-DATA_REGISTRY_MODULES: tuple[str, ...] = ()
+MODEL_REGISTRY_MODULES: tuple[str, ...] = ("llmtrain.models.dummy_gpt",)
+DATA_REGISTRY_MODULES: tuple[str, ...] = ("llmtrain.data.dummy_text",)
 
 
 def initialize_registries() -> None:

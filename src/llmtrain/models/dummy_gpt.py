@@ -39,7 +39,7 @@ class DummyGPTAdapter(ModelAdapter):
         d_model = min(d_model_raw, 128)
         n_heads = max(1, min(cfg.model.n_heads, d_model))
         if d_model % n_heads != 0:
-            n_heads = 1
+            n_heads = 2 if d_model % 2 == 0 else 1
         return _TinyGPT(vocab_size=vocab_size, d_model=d_model, n_heads=n_heads)
 
     def build_tokenizer(self, cfg: RunConfig) -> Any | None:
