@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import logging
 import time
 from dataclasses import dataclass
@@ -13,7 +12,7 @@ from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import get_data_module
 from llmtrain.registry.models import get_model_adapter
 
-DEFAULT_DRY_RUN_STEPS = 2
+DEFAULT_DRY_RUN_STEPS = 5
 
 
 @dataclass(frozen=True)
@@ -24,10 +23,7 @@ class DryRunResult:
 
 
 def _resolve_dry_run_steps(cfg: RunConfig) -> int:
-    extra_steps = cfg.trainer.extra.get("dry_run_steps")
     steps = DEFAULT_DRY_RUN_STEPS
-    if isinstance(extra_steps, int):
-        steps = extra_steps
     if steps < 1:
         steps = DEFAULT_DRY_RUN_STEPS
     return min(steps, cfg.trainer.max_steps)
@@ -62,12 +58,14 @@ def run_dry_run(cfg: RunConfig, *, logger: logging.Logger | None = None) -> DryR
     model.train()
 
     steps = _resolve_dry_run_steps(cfg)
-    iterator = itertools.cycle(train_loader)
-
+    iterator = iter(train_loader)
     steps_executed = 0
     with torch.no_grad():
         for step in range(1, steps + 1):
-            batch = next(iterator)
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                break
             batch = _move_batch(batch, device)
             start_time = time.perf_counter()
             loss, metrics = adapter.compute_loss(model, batch)
