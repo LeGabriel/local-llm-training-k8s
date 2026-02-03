@@ -53,7 +53,7 @@ def run_dry_run(cfg: RunConfig, *, logger: logging.Logger | None = None) -> DryR
     data_module.setup(cfg, tokenizer=tokenizer)
     train_loader = data_module.train_dataloader()
 
-    device = torch.device(cfg.run.device)
+    device = torch.device("cpu")
     model = model.to(device)
     model.train()
 
