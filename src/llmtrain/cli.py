@@ -12,6 +12,11 @@ import yaml
 from llmtrain import __version__
 from llmtrain.config.loader import ConfigLoadError, load_and_validate_config
 from llmtrain.config.schemas import LoggingConfig
+from llmtrain.registry import initialize_registries
+from llmtrain.registry.data import RegistryError as DataRegistryError
+from llmtrain.registry.data import get_data_module
+from llmtrain.registry.models import RegistryError as ModelRegistryError
+from llmtrain.registry.models import get_model_adapter
 from llmtrain.training.dry_run import run_dry_run
 from llmtrain.utils.logging import configure_logging
 from llmtrain.utils.metadata import generate_meta, write_meta_json
@@ -182,6 +187,14 @@ def _handle_train(args: argparse.Namespace) -> int:
             resolved_config_path=str(resolved_path),
         )
         write_meta_json(run_dir, meta)
+
+    initialize_registries()
+    try:
+        get_model_adapter(config.model.name)
+        get_data_module(config.data.name)
+    except (ModelRegistryError, DataRegistryError) as exc:
+        _emit_config_error(ConfigLoadError(str(exc)), json_output=args.json)
+        return 2
 
     try:
         dry_run_result = run_dry_run(config, logger=dry_run_logger)
