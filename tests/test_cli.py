@@ -35,8 +35,8 @@ def _minimal_config(root_dir: Path) -> dict[str, object]:
     return {
         "schema_version": 1,
         "run": {"name": "cli-test"},
-        "model": {"name": "tiny-model"},
-        "data": {"name": "toy-data"},
+        "model": {"name": "dummy_gpt"},
+        "data": {"name": "dummy_text"},
         "trainer": {},
         "ddp": {},
         "mlflow": {},
@@ -137,6 +137,9 @@ def test_train_dry_run_creates_outputs(tmp_path: Path) -> None:
     assert result.returncode == 0
     summary = json.loads(result.stdout)
     assert summary["run_id"] == "unit-test-run"
+    assert summary["resolved_model_adapter"] == "dummy_gpt"
+    assert summary["resolved_data_module"] == "dummy_text"
+    assert summary["dry_run_steps_executed"] == 5
 
     run_dir = root_dir / "unit-test-run"
     assert (run_dir / "config.yaml").exists()

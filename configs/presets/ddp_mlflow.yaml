@@ -6,7 +6,7 @@ run:
   deterministic: true
   notes: "Example with DDP overrides and MLflow run naming."
 model:
-  name: "tiny-transformer"
+  name: "dummy_gpt"
   init: "random"
   block_size: 128
   d_model: 256

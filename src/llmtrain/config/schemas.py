@@ -1,6 +1,6 @@
 """Pydantic schema models for configuration validation."""
 
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -34,6 +34,7 @@ class ModelConfig(BaseModel):
     dropout: float = Field(0.1, ge=0.0, lt=1.0)
     tie_embeddings: bool = True
     vocab_size: int | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(
         extra="forbid",
@@ -61,6 +62,7 @@ class DataConfig(BaseModel):
     dataset_name: str | None = None
     dataset_config: str | None = None
     text_column: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(
         extra="forbid",
@@ -82,6 +84,7 @@ class TrainerConfig(BaseModel):
     log_every_steps: int = Field(10, ge=1)
     eval_every_steps: int = Field(100, ge=1)
     save_every_steps: int = Field(500, ge=1)
+    extra: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(
         extra="forbid",

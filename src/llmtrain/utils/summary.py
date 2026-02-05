@@ -20,12 +20,15 @@ def format_run_summary(
     run_id: str,
     run_dir: str | Path,
     json_output: bool = False,
+    resolved_model_adapter: str | None = None,
+    resolved_data_module: str | None = None,
+    dry_run_steps_executed: int | None = None,
 ) -> str | dict[str, Any]:
     """Return a planned run summary as either human text or JSON-ready data."""
     run_path = Path(run_dir)
     ddp_env = _ddp_env_snapshot()
 
-    summary = {
+    summary: dict[str, Any] = {
         "run_id": run_id,
         "output_dir": str(run_path),
         "model": {
@@ -83,6 +86,12 @@ def format_run_summary(
             "log_models": config.mlflow.log_models,
         },
     }
+    if resolved_model_adapter is not None:
+        summary["resolved_model_adapter"] = resolved_model_adapter
+    if resolved_data_module is not None:
+        summary["resolved_data_module"] = resolved_data_module
+    if dry_run_steps_executed is not None:
+        summary["dry_run_steps_executed"] = dry_run_steps_executed
 
     if json_output:
         return summary
@@ -126,6 +135,18 @@ def format_run_summary(
         f"experiment={config.mlflow.experiment} run_name={config.mlflow.run_name} "
         f"log_models={config.mlflow.log_models}"
     )
+    dry_run_summary = None
+    if (
+        resolved_model_adapter is not None
+        or resolved_data_module is not None
+        or dry_run_steps_executed is not None
+    ):
+        dry_run_summary = (
+            "Dry run: "
+            f"resolved_model_adapter={resolved_model_adapter} "
+            f"resolved_data_module={resolved_data_module} "
+            f"steps_executed={dry_run_steps_executed}"
+        )
 
     lines = [
         "Planned run:",
@@ -137,4 +158,6 @@ def format_run_summary(
         f"  {ddp_summary}",
         f"  {mlflow_summary}",
     ]
+    if dry_run_summary is not None:
+        lines.append(f"  {dry_run_summary}")
     return "\n".join(lines)
