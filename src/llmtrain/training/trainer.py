@@ -97,15 +97,23 @@ class Trainer:
             max_steps_override if max_steps_override is not None else self._cfg.trainer.max_steps
         )
         grad_accum_steps = self._cfg.trainer.grad_accum_steps
+        log_every = self._cfg.trainer.log_every_steps
 
         start_time = time.perf_counter()
         iterator = iter(self._train_loader)
         first_step_loss: float | None = None
         step_loss = 0.0
 
+        # Metric logging state: running accumulators for the current log interval.
+        interval_loss_sum = 0.0
+        interval_steps = 0
+        interval_tokens = 0
+        interval_start = time.perf_counter()
+
         for step in range(1, max_steps + 1):
             self._optimizer.zero_grad()
             accumulated_loss = 0.0
+            step_tokens = 0
 
             for _ in range(grad_accum_steps):
                 try:
@@ -115,6 +123,7 @@ class Trainer:
                     batch = next(iterator)
 
                 batch = _move_batch(batch, self._device)
+                step_tokens += batch["input_ids"].numel()
                 loss, metrics = self._adapter.compute_loss(self._model, batch)
                 scaled = loss / grad_accum_steps
                 scaled.backward()
@@ -131,14 +140,32 @@ class Trainer:
             if step == 1:
                 first_step_loss = step_loss
 
-            current_lr = float(self._scheduler.get_last_lr()[0])
-            logger.info(
-                "step %d/%d  loss=%.4f  lr=%.6e",
-                step,
-                max_steps,
-                step_loss,
-                current_lr,
-            )
+            # Accumulate interval metrics.
+            interval_loss_sum += step_loss
+            interval_steps += 1
+            interval_tokens += step_tokens
+
+            # Emit structured log every log_every steps and always at the final step.
+            if step % log_every == 0 or step == max_steps:
+                interval_time = time.perf_counter() - interval_start
+                avg_loss = interval_loss_sum / interval_steps
+                avg_step_time = interval_time / interval_steps
+                tokens_per_sec = interval_tokens / interval_time if interval_time > 0 else 0.0
+                current_lr = float(self._scheduler.get_last_lr()[0])
+                logger.info(
+                    "step=%d/%d  loss=%.4f  lr=%.6e  tokens_per_sec=%.1f  step_time=%.4fs",
+                    step,
+                    max_steps,
+                    avg_loss,
+                    current_lr,
+                    tokens_per_sec,
+                    avg_step_time,
+                )
+                # Reset interval accumulators.
+                interval_loss_sum = 0.0
+                interval_steps = 0
+                interval_tokens = 0
+                interval_start = time.perf_counter()
 
         total_time = time.perf_counter() - start_time
         return TrainResult(

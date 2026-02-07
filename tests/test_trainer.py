@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import math
+
+import pytest
 
 from llmtrain.config.schemas import RunConfig
 from llmtrain.training import Trainer, TrainResult
@@ -114,3 +117,118 @@ def test_lr_scheduler_final_step() -> None:
     trainer.fit()
     lr: float = float(trainer.scheduler.get_last_lr()[0])
     assert lr == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Metric logging tests
+# ---------------------------------------------------------------------------
+
+
+def test_metric_logging_emits_structured_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Structured log is emitted every log_every_steps with required fields."""
+    payload = {
+        "schema_version": 1,
+        "run": {"name": "metric-log-test"},
+        "model": {"name": "dummy_gpt"},
+        "data": {"name": "dummy_text"},
+        "trainer": {
+            "max_steps": 6,
+            "log_every_steps": 2,
+            "warmup_steps": 0,
+        },
+        "ddp": {},
+        "mlflow": {},
+        "logging": {"log_to_file": False},
+        "output": {"root_dir": "runs"},
+    }
+    cfg = RunConfig.model_validate(payload)
+    trainer = Trainer(cfg)
+
+    with caplog.at_level(logging.INFO, logger="llmtrain.training.trainer"):
+        trainer.fit()
+
+    # Filter only the structured step logs (key=value format).
+    step_logs = [r.message for r in caplog.records if "step=" in r.message]
+
+    # max_steps=6, log_every=2 → logs at steps 2, 4, 6.
+    assert len(step_logs) == 3
+
+    for msg in step_logs:
+        assert "loss=" in msg
+        assert "lr=" in msg
+        assert "tokens_per_sec=" in msg
+        assert "step_time=" in msg
+
+
+def test_metric_logging_last_step_always_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Final step is always logged even if not a multiple of log_every_steps."""
+    payload = {
+        "schema_version": 1,
+        "run": {"name": "metric-log-final-test"},
+        "model": {"name": "dummy_gpt"},
+        "data": {"name": "dummy_text"},
+        "trainer": {
+            "max_steps": 5,
+            "log_every_steps": 3,
+            "warmup_steps": 0,
+        },
+        "ddp": {},
+        "mlflow": {},
+        "logging": {"log_to_file": False},
+        "output": {"root_dir": "runs"},
+    }
+    cfg = RunConfig.model_validate(payload)
+    trainer = Trainer(cfg)
+
+    with caplog.at_level(logging.INFO, logger="llmtrain.training.trainer"):
+        trainer.fit()
+
+    step_logs = [r.message for r in caplog.records if "step=" in r.message]
+
+    # Expect logs at step 3 (3 % 3 == 0) and step 5 (final step).
+    assert len(step_logs) == 2
+    assert "step=5/5" in step_logs[-1]
+
+
+def test_metric_logging_tokens_per_sec_positive(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """tokens_per_sec is a positive number in emitted logs."""
+    payload = {
+        "schema_version": 1,
+        "run": {"name": "metric-log-tps-test"},
+        "model": {"name": "dummy_gpt"},
+        "data": {"name": "dummy_text"},
+        "trainer": {
+            "max_steps": 4,
+            "log_every_steps": 4,
+            "warmup_steps": 0,
+        },
+        "ddp": {},
+        "mlflow": {},
+        "logging": {"log_to_file": False},
+        "output": {"root_dir": "runs"},
+    }
+    cfg = RunConfig.model_validate(payload)
+    trainer = Trainer(cfg)
+
+    with caplog.at_level(logging.INFO, logger="llmtrain.training.trainer"):
+        trainer.fit()
+
+    step_logs = [r.message for r in caplog.records if "step=" in r.message]
+    assert len(step_logs) == 1
+
+    # Extract tokens_per_sec value and verify it is positive.
+    msg = step_logs[0]
+    # Format: "... tokens_per_sec=1234.5 ..."
+    for part in msg.split():
+        if part.startswith("tokens_per_sec="):
+            tps = float(part.split("=")[1])
+            assert tps > 0.0
+            break
+    else:
+        pytest.fail("tokens_per_sec field not found in log message")
