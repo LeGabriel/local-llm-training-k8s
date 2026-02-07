@@ -22,6 +22,7 @@ class TrainResult:
     final_loss: float
     total_time: float
     peak_memory: float
+    first_step_loss: float | None = None
 
 
 def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -61,35 +62,48 @@ class Trainer:
         )
 
     def fit(self) -> TrainResult:
-        """Run exactly one optimizer step (one micro-batch) and return the result."""
+        """Run up to max_steps optimizer steps with gradient accumulation; return the result."""
         self._model.train()
-        self._optimizer.zero_grad()
+        max_steps = self._cfg.trainer.max_steps
+        grad_accum_steps = self._cfg.trainer.grad_accum_steps
 
-        iterator = iter(self._train_loader)
-        try:
-            batch = next(iterator)
-        except StopIteration:
-            iterator = iter(self._train_loader)
-            batch = next(iterator)
-
-        batch = _move_batch(batch, self._device)
         start_time = time.perf_counter()
+        iterator = iter(self._train_loader)
+        first_step_loss: float | None = None
+        step_loss = 0.0
 
-        loss, metrics = self._adapter.compute_loss(self._model, batch)
-        loss.backward()
+        for step in range(1, max_steps + 1):
+            self._optimizer.zero_grad()
+            accumulated_loss = 0.0
 
-        torch.nn.utils.clip_grad_norm_(
-            self._model.parameters(),
-            self._cfg.trainer.max_grad_norm,
-        )
-        self._optimizer.step()
+            for _ in range(grad_accum_steps):
+                try:
+                    batch = next(iterator)
+                except StopIteration:
+                    iterator = iter(self._train_loader)
+                    batch = next(iterator)
+
+                batch = _move_batch(batch, self._device)
+                loss, metrics = self._adapter.compute_loss(self._model, batch)
+                scaled = loss / grad_accum_steps
+                scaled.backward()
+                accumulated_loss += float(metrics.get("loss", loss.item()))
+
+            torch.nn.utils.clip_grad_norm_(
+                self._model.parameters(),
+                self._cfg.trainer.max_grad_norm,
+            )
+            self._optimizer.step()
+
+            step_loss = accumulated_loss / grad_accum_steps
+            if step == 1:
+                first_step_loss = step_loss
 
         total_time = time.perf_counter() - start_time
-        final_loss = float(metrics.get("loss", loss.item()))
-
         return TrainResult(
-            final_step=1,
-            final_loss=final_loss,
+            final_step=max_steps,
+            final_loss=step_loss,
             total_time=total_time,
             peak_memory=0.0,
+            first_step_loss=first_step_loss,
         )
