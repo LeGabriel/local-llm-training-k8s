@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from llmtrain.config.schemas import RunConfig
+from llmtrain.training.trainer import TrainResult
 from llmtrain.utils.summary import format_run_summary
 
 
@@ -52,3 +53,56 @@ def test_format_run_summary_includes_v03_fields() -> None:
     assert "resolved_model_adapter=dummy_gpt" in text_summary
     assert "resolved_data_module=dummy_text" in text_summary
     assert "steps_executed=5" in text_summary
+
+
+def test_format_run_summary_includes_train_result_json() -> None:
+    config = _minimal_config()
+    result = TrainResult(
+        final_step=10,
+        final_loss=1.234,
+        total_time=5.67,
+        peak_memory=0.0,
+        first_step_loss=3.456,
+    )
+
+    json_summary = format_run_summary(
+        config=config,
+        run_id="run-train",
+        run_dir="runs/run-train",
+        json_output=True,
+        train_result=result,
+    )
+
+    assert isinstance(json_summary, dict)
+    assert "training" in json_summary
+    training = json_summary["training"]
+    assert training["final_step"] == 10
+    assert training["final_loss"] == 1.234
+    assert training["first_step_loss"] == 3.456
+    assert training["total_time"] == 5.67
+    assert training["peak_memory"] == 0.0
+
+
+def test_format_run_summary_includes_train_result_text() -> None:
+    config = _minimal_config()
+    result = TrainResult(
+        final_step=10,
+        final_loss=1.234,
+        total_time=5.67,
+        peak_memory=0.0,
+        first_step_loss=3.456,
+    )
+
+    text_summary = format_run_summary(
+        config=config,
+        run_id="run-train",
+        run_dir="runs/run-train",
+        json_output=False,
+        train_result=result,
+    )
+
+    assert isinstance(text_summary, str)
+    assert "Training:" in text_summary
+    assert "final_step=10" in text_summary
+    assert "final_loss=1.2340" in text_summary
+    assert "total_time=5.67s" in text_summary
