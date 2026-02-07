@@ -17,6 +17,7 @@ from llmtrain.registry.data import RegistryError as DataRegistryError
 from llmtrain.registry.data import get_data_module
 from llmtrain.registry.models import RegistryError as ModelRegistryError
 from llmtrain.registry.models import get_model_adapter
+from llmtrain.training import Trainer
 from llmtrain.training.dry_run import run_dry_run
 from llmtrain.utils.logging import configure_logging
 from llmtrain.utils.metadata import generate_meta, write_meta_json
@@ -167,15 +168,6 @@ def _handle_train(args: argparse.Namespace) -> int:
     run_id = args.run_id or config.output.run_id or generate_run_id(config.run.name, root_dir)
     run_dir = create_run_directory(root_dir, run_id)
     logger = _configure_logger(config.logging, verbose=args.verbose, log_dir=run_dir / "logs")
-    dry_run_logger = logger
-    if args.json:
-        dry_run_logger = logging.getLogger("llmtrain.dry_run")
-        dry_run_logger.setLevel(logger.level)
-        dry_run_logger.handlers.clear()
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logger.handlers[0].formatter if logger.handlers else None)
-        dry_run_logger.addHandler(handler)
-        dry_run_logger.propagate = False
 
     if config.output.save_config_copy:
         write_resolved_config(run_dir, config)
@@ -196,21 +188,58 @@ def _handle_train(args: argparse.Namespace) -> int:
         _emit_config_error(ConfigLoadError(str(exc)), json_output=args.json)
         return 2
 
-    try:
-        dry_run_result = run_dry_run(config, logger=dry_run_logger)
-    except Exception as exc:
-        print(f"Dry-run failed: {exc}", file=sys.stderr)
-        return 1
+    if args.dry_run:
+        # --- Dry-run path (forward-only sanity check) ---
+        dry_run_logger = logger
+        if args.json:
+            dry_run_logger = logging.getLogger("llmtrain.dry_run")
+            dry_run_logger.setLevel(logger.level)
+            dry_run_logger.handlers.clear()
+            handler = logging.StreamHandler(sys.stderr)
+            handler.setFormatter(logger.handlers[0].formatter if logger.handlers else None)
+            dry_run_logger.addHandler(handler)
+            dry_run_logger.propagate = False
 
-    summary = format_run_summary(
-        config=config,
-        run_id=run_id,
-        run_dir=run_dir,
-        json_output=args.json,
-        resolved_model_adapter=dry_run_result.resolved_model_adapter,
-        resolved_data_module=dry_run_result.resolved_data_module,
-        dry_run_steps_executed=dry_run_result.steps_executed,
-    )
+        try:
+            dry_run_result = run_dry_run(config, logger=dry_run_logger)
+        except Exception as exc:
+            print(f"Dry-run failed: {exc}", file=sys.stderr)
+            return 1
+
+        summary = format_run_summary(
+            config=config,
+            run_id=run_id,
+            run_dir=run_dir,
+            json_output=args.json,
+            resolved_model_adapter=dry_run_result.resolved_model_adapter,
+            resolved_data_module=dry_run_result.resolved_data_module,
+            dry_run_steps_executed=dry_run_result.steps_executed,
+        )
+    else:
+        # --- Full training path ---
+        if args.json:
+            train_logger = logging.getLogger("llmtrain.training.trainer")
+            train_logger.setLevel(logger.level)
+            train_logger.handlers.clear()
+            handler = logging.StreamHandler(sys.stderr)
+            handler.setFormatter(logger.handlers[0].formatter if logger.handlers else None)
+            train_logger.addHandler(handler)
+            train_logger.propagate = False
+
+        try:
+            trainer = Trainer(config)
+            train_result = trainer.fit()
+        except Exception as exc:
+            print(f"Training failed: {exc}", file=sys.stderr)
+            return 1
+
+        summary = format_run_summary(
+            config=config,
+            run_id=run_id,
+            run_dir=run_dir,
+            json_output=args.json,
+            train_result=train_result,
+        )
 
     if args.json:
         print(json.dumps(summary, indent=2))

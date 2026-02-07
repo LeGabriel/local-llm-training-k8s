@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from llmtrain.config.schemas import RunConfig
+from llmtrain.training.trainer import TrainResult
 
 
 def _ddp_env_snapshot() -> dict[str, str | None]:
@@ -23,6 +24,7 @@ def format_run_summary(
     resolved_model_adapter: str | None = None,
     resolved_data_module: str | None = None,
     dry_run_steps_executed: int | None = None,
+    train_result: TrainResult | None = None,
 ) -> str | dict[str, Any]:
     """Return a planned run summary as either human text or JSON-ready data."""
     run_path = Path(run_dir)
@@ -92,6 +94,14 @@ def format_run_summary(
         summary["resolved_data_module"] = resolved_data_module
     if dry_run_steps_executed is not None:
         summary["dry_run_steps_executed"] = dry_run_steps_executed
+    if train_result is not None:
+        summary["training"] = {
+            "final_step": train_result.final_step,
+            "final_loss": train_result.final_loss,
+            "first_step_loss": train_result.first_step_loss,
+            "total_time": train_result.total_time,
+            "peak_memory": train_result.peak_memory,
+        }
 
     if json_output:
         return summary
@@ -148,6 +158,15 @@ def format_run_summary(
             f"steps_executed={dry_run_steps_executed}"
         )
 
+    training_summary = None
+    if train_result is not None:
+        training_summary = (
+            "Training: "
+            f"final_step={train_result.final_step} "
+            f"final_loss={train_result.final_loss:.4f} "
+            f"total_time={train_result.total_time:.2f}s"
+        )
+
     lines = [
         "Planned run:",
         f"  Run ID: {run_id}",
@@ -160,4 +179,6 @@ def format_run_summary(
     ]
     if dry_run_summary is not None:
         lines.append(f"  {dry_run_summary}")
+    if training_summary is not None:
+        lines.append(f"  {training_summary}")
     return "\n".join(lines)
