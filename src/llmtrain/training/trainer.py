@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -12,6 +14,8 @@ from llmtrain.config.schemas import RunConfig
 from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import get_data_module
 from llmtrain.registry.models import get_model_adapter
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -60,11 +64,38 @@ class Trainer:
             lr=cfg.trainer.lr,
             weight_decay=cfg.trainer.weight_decay,
         )
+        self._scheduler = self._build_scheduler(self._optimizer)
 
-    def fit(self) -> TrainResult:
+    def _build_scheduler(
+        self, optimizer: torch.optim.Optimizer
+    ) -> torch.optim.lr_scheduler.LambdaLR:
+        """Build LambdaLR: linear warmup 0→warmup_steps, then cosine decay to 0 by max_steps."""
+        warmup_steps = self._cfg.trainer.warmup_steps
+        max_steps = self._cfg.trainer.max_steps
+
+        def lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return (step / warmup_steps) if warmup_steps > 0 else 1.0
+            if step >= max_steps:
+                return 0.0
+            if max_steps <= warmup_steps:
+                return 1.0
+            progress = (step - warmup_steps) / (max_steps - warmup_steps)
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    @property
+    def scheduler(self) -> torch.optim.lr_scheduler.LambdaLR:
+        """Scheduler instance (for tests that assert LR curve)."""
+        return self._scheduler
+
+    def fit(self, *, max_steps_override: int | None = None) -> TrainResult:
         """Run up to max_steps optimizer steps with gradient accumulation; return the result."""
         self._model.train()
-        max_steps = self._cfg.trainer.max_steps
+        max_steps = (
+            max_steps_override if max_steps_override is not None else self._cfg.trainer.max_steps
+        )
         grad_accum_steps = self._cfg.trainer.grad_accum_steps
 
         start_time = time.perf_counter()
@@ -94,10 +125,20 @@ class Trainer:
                 self._cfg.trainer.max_grad_norm,
             )
             self._optimizer.step()
+            self._scheduler.step()
 
             step_loss = accumulated_loss / grad_accum_steps
             if step == 1:
                 first_step_loss = step_loss
+
+            current_lr = float(self._scheduler.get_last_lr()[0])
+            logger.info(
+                "step %d/%d  loss=%.4f  lr=%.6e",
+                step,
+                max_steps,
+                step_loss,
+                current_lr,
+            )
 
         total_time = time.perf_counter() - start_time
         return TrainResult(
