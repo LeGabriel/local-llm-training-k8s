@@ -7,6 +7,7 @@ import math
 import random
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -16,7 +17,7 @@ from llmtrain.config.schemas import RunConfig
 from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import get_data_module
 from llmtrain.registry.models import get_model_adapter
-from llmtrain.training.checkpoint import CheckpointPayload
+from llmtrain.training.checkpoint import CheckpointManager, CheckpointPayload
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 class Trainer:
     """Single-process trainer: one device, step-based loop with gradient accumulation."""
 
-    def __init__(self, cfg: RunConfig) -> None:
+    def __init__(self, cfg: RunConfig, *, run_dir: Path | None = None) -> None:
         self._cfg = cfg
         initialize_registries()
 
@@ -68,6 +69,10 @@ class Trainer:
             weight_decay=cfg.trainer.weight_decay,
         )
         self._scheduler = self._build_scheduler(self._optimizer)
+        self._ckpt_mgr: CheckpointManager | None = None
+        if run_dir is not None:
+            keep_last_k = int(cfg.trainer.extra.get("keep_last_k", 3))
+            self._ckpt_mgr = CheckpointManager(run_dir / "checkpoints", keep_last_k=keep_last_k)
 
     def _build_scheduler(
         self, optimizer: torch.optim.Optimizer
@@ -122,6 +127,7 @@ class Trainer:
         )
         grad_accum_steps = self._cfg.trainer.grad_accum_steps
         log_every = self._cfg.trainer.log_every_steps
+        save_every = self._cfg.trainer.save_every_steps
 
         start_time = time.perf_counter()
         iterator = iter(self._train_loader)
@@ -163,6 +169,15 @@ class Trainer:
             step_loss = accumulated_loss / grad_accum_steps
             if step == 1:
                 first_step_loss = step_loss
+
+            if self._ckpt_mgr is not None and (step % save_every == 0 or step == max_steps):
+                self._ckpt_mgr.save(
+                    step,
+                    self._model,
+                    self._optimizer,
+                    self._scheduler,
+                    self._cfg,
+                )
 
             # Accumulate interval metrics.
             interval_loss_sum += step_loss

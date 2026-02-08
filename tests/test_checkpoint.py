@@ -30,6 +30,27 @@ def _minimal_config() -> RunConfig:
     return RunConfig.model_validate(payload)
 
 
+def _training_config(max_steps: int, save_every_steps: int) -> RunConfig:
+    payload = {
+        "schema_version": 1,
+        "run": {"name": "ckpt-train-test"},
+        "model": {"name": "dummy_gpt"},
+        "data": {"name": "dummy_text"},
+        "trainer": {
+            "max_steps": max_steps,
+            "warmup_steps": 0,
+            "micro_batch_size": 1,
+            "grad_accum_steps": 1,
+            "save_every_steps": save_every_steps,
+        },
+        "ddp": {},
+        "mlflow": {},
+        "logging": {"log_to_file": False},
+        "output": {"root_dir": "runs"},
+    }
+    return RunConfig.model_validate(payload)
+
+
 def _make_objects(
     cfg: RunConfig,
 ) -> tuple[torch.nn.Module, torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler]:
@@ -213,3 +234,31 @@ def test_restore_sets_optimizer_state(tmp_path: Path) -> None:
     ):
         for key in ("lr", "betas", "eps", "weight_decay"):
             assert orig_group[key] == rest_group[key], f"Mismatch on param_group key {key}"
+
+
+# ---------------------------------------------------------------------------
+# trainer checkpoint save tests
+# ---------------------------------------------------------------------------
+
+
+def test_training_loop_saves_at_correct_steps(tmp_path: Path) -> None:
+    """Checkpoints are saved every save_every_steps and at the final step."""
+    cfg = _training_config(max_steps=20, save_every_steps=10)
+    trainer = Trainer(cfg, run_dir=tmp_path)
+    trainer.fit()
+
+    ckpt_dir = tmp_path / "checkpoints"
+    expected = {"step_000010.pt", "step_000020.pt"}
+    found = {path.name for path in ckpt_dir.glob("step_*.pt")}
+    assert expected.issubset(found)
+
+
+def test_training_loop_always_saves_final_step(tmp_path: Path) -> None:
+    """Final step checkpoint is saved even if not a multiple of save_every_steps."""
+    cfg = _training_config(max_steps=15, save_every_steps=10)
+    trainer = Trainer(cfg, run_dir=tmp_path)
+    trainer.fit()
+
+    ckpt_dir = tmp_path / "checkpoints"
+    assert (ckpt_dir / "step_000010.pt").exists()
+    assert (ckpt_dir / "step_000015.pt").exists()
