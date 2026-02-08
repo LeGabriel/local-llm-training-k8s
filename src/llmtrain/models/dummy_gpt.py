@@ -36,7 +36,8 @@ class DummyGPTAdapter(ModelAdapter):
     def build_model(self, cfg: RunConfig) -> nn.Module:
         vocab_size = cfg.model.vocab_size or 128
         d_model_raw = cfg.model.d_model or 128
-        d_model = min(d_model_raw, 128)
+        # Keep the dummy model small so unit tests are fast on CPU.
+        d_model = min(d_model_raw, 64)
         n_heads = max(1, min(cfg.model.n_heads, d_model))
         if d_model % n_heads != 0:
             n_heads = 2 if d_model % 2 == 0 else 1
