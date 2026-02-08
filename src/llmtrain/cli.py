@@ -118,7 +118,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("train", parents=[common], help="Prepare a training run.")
+    train_parser = subparsers.add_parser("train", parents=[common], help="Prepare a training run.")
+    train_parser.add_argument(
+        "--resume",
+        default=None,
+        help="Resume from a run_id or checkpoint path.",
+    )
     subparsers.add_parser("validate", parents=[common], help="Validate a config file.")
     subparsers.add_parser(
         "print-config",
@@ -242,9 +247,13 @@ def _handle_train(args: argparse.Namespace) -> int:
             train_logger.addHandler(handler)
             train_logger.propagate = False
 
+        resume_from = getattr(args, "resume", None)
+        if resume_from is not None:
+            logger.info("Resuming from: %s", resume_from)
+
         try:
             trainer = Trainer(config, run_dir=run_dir)
-            train_result = trainer.fit()
+            train_result = trainer.fit(resume_from=resume_from)
         except Exception as exc:
             print(f"Training failed: {exc}", file=sys.stderr)
             return 1
@@ -255,6 +264,7 @@ def _handle_train(args: argparse.Namespace) -> int:
             run_dir=run_dir,
             json_output=args.json,
             train_result=train_result,
+            resumed_from=resume_from,
         )
 
     if args.json:

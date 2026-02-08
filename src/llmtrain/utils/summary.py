@@ -25,6 +25,7 @@ def format_run_summary(
     resolved_data_module: str | None = None,
     dry_run_steps_executed: int | None = None,
     train_result: TrainResult | None = None,
+    resumed_from: str | None = None,
 ) -> str | dict[str, Any]:
     """Return a planned run summary as either human text or JSON-ready data."""
     run_path = Path(run_dir)
@@ -94,14 +95,19 @@ def format_run_summary(
         summary["resolved_data_module"] = resolved_data_module
     if dry_run_steps_executed is not None:
         summary["dry_run_steps_executed"] = dry_run_steps_executed
+    if resumed_from is not None:
+        summary["resumed_from"] = resumed_from
     if train_result is not None:
-        summary["training"] = {
+        training_dict: dict[str, Any] = {
             "final_step": train_result.final_step,
             "final_loss": train_result.final_loss,
             "first_step_loss": train_result.first_step_loss,
             "total_time": train_result.total_time,
             "peak_memory": train_result.peak_memory,
         }
+        if train_result.resumed_from_step is not None:
+            training_dict["resumed_from_step"] = train_result.resumed_from_step
+        summary["training"] = training_dict
 
     if json_output:
         return summary
@@ -160,12 +166,15 @@ def format_run_summary(
 
     training_summary = None
     if train_result is not None:
-        training_summary = (
+        parts = [
             "Training: "
             f"final_step={train_result.final_step} "
             f"final_loss={train_result.final_loss:.4f} "
-            f"total_time={train_result.total_time:.2f}s"
-        )
+            f"total_time={train_result.total_time:.2f}s",
+        ]
+        if train_result.resumed_from_step is not None:
+            parts[0] += f" resumed_from_step={train_result.resumed_from_step}"
+        training_summary = parts[0]
 
     lines = [
         "Planned run:",
@@ -177,6 +186,8 @@ def format_run_summary(
         f"  {ddp_summary}",
         f"  {mlflow_summary}",
     ]
+    if resumed_from is not None:
+        lines.append(f"  Resumed from: {resumed_from}")
     if dry_run_summary is not None:
         lines.append(f"  {dry_run_summary}")
     if training_summary is not None:
