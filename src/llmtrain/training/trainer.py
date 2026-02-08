@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import torch
 
 from llmtrain.config.schemas import RunConfig
 from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import get_data_module
 from llmtrain.registry.models import get_model_adapter
+from llmtrain.training.checkpoint import CheckpointPayload
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,27 @@ class Trainer:
     def scheduler(self) -> torch.optim.lr_scheduler.LambdaLR:
         """Scheduler instance (for tests that assert LR curve)."""
         return self._scheduler
+
+    def restore(self, payload: CheckpointPayload) -> int:
+        """Restore model, optimizer, scheduler, and RNG states from a checkpoint payload.
+
+        Returns the step number stored in the checkpoint (i.e. the step to
+        resume *from*).
+        """
+        self._model.load_state_dict(payload["model_state_dict"])
+        self._optimizer.load_state_dict(payload["optimizer_state_dict"])
+        self._scheduler.load_state_dict(payload["scheduler_state_dict"])
+
+        rng = payload["rng_states"]
+        random.setstate(rng["python"])
+        np.random.set_state(rng["numpy"])
+        torch.random.set_rng_state(rng["torch"])
+        if "cuda" in rng and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(rng["cuda"])
+
+        step = payload["step"]
+        logger.info("trainer: restored state from step %d", step)
+        return step
 
     def fit(self, *, max_steps_override: int | None = None) -> TrainResult:
         """Run up to max_steps optimizer steps with gradient accumulation; return the result."""

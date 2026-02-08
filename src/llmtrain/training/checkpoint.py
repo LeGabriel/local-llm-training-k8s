@@ -1,4 +1,4 @@
-"""Checkpoint management: save, prune, and (later) load/restore."""
+"""Checkpoint management: save, prune, load, and restore."""
 
 from __future__ import annotations
 
@@ -73,6 +73,34 @@ class CheckpointManager:
 
         self._prune_old()
         return path
+
+    def load(self, path: Path) -> CheckpointPayload:
+        """Read a checkpoint file and return a validated :class:`CheckpointPayload`.
+
+        Parameters
+        ----------
+        path:
+            Absolute or relative path to a ``step_*.pt`` file.
+        """
+        logger.info("checkpoint: loading %s", path)
+        data = torch.load(path, weights_only=False)
+
+        # Validate that all expected keys are present.
+        expected_keys: set[str] = set(CheckpointPayload.__annotations__)
+        missing = expected_keys - set(data.keys())
+        if missing:
+            raise ValueError(f"Checkpoint at {path} is missing keys: {missing}")
+
+        return data  # type: ignore[return-value]
+
+    def latest_checkpoint(self) -> Path | None:
+        """Return the most recent ``step_*.pt`` path, or ``None`` if empty."""
+        existing = sorted(
+            self._checkpoint_dir.glob("step_*.pt"),
+            key=lambda p: int(p.stem.split("_")[1]),
+            reverse=True,
+        )
+        return existing[0] if existing else None
 
     # ------------------------------------------------------------------
     # Internal helpers
