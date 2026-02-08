@@ -99,14 +99,14 @@ class DummyTextDataModule(DataModule):
                 self._train_dataset,
                 num_replicas=world_size,
                 rank=rank,
-                shuffle=True,
+                shuffle=not self._cfg.run.deterministic,
                 seed=self._cfg.run.seed,
             )
         return DataLoader(
             self._train_dataset,
             batch_size=micro_batch_size,
             num_workers=num_workers,
-            shuffle=sampler is None,
+            shuffle=sampler is None and not self._cfg.run.deterministic,
             sampler=sampler,
         )
 

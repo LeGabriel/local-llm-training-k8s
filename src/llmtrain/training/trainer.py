@@ -31,6 +31,7 @@ class TrainResult:
     total_time: float
     peak_memory: float
     first_step_loss: float | None = None
+    resumed_from_step: int | None = None
 
 
 def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -119,7 +120,40 @@ class Trainer:
         logger.info("trainer: restored state from step %d", step)
         return step
 
-    def fit(self, *, max_steps_override: int | None = None) -> TrainResult:
+    def _resolve_resume_path(self, resume_from: str | Path) -> Path:
+        """Resolve a resume spec into a concrete checkpoint path."""
+        candidate = Path(resume_from)
+        if candidate.exists():
+            if candidate.is_file():
+                return candidate
+            if candidate.is_dir():
+                mgr = CheckpointManager(candidate, keep_last_k=1)
+                latest = mgr.latest_checkpoint()
+                if latest is None:
+                    raise FileNotFoundError(f"No checkpoints found in {candidate}")
+                return latest
+            raise FileNotFoundError(f"Resume path {candidate} is not a file or directory")
+
+        if candidate.suffix == ".pt":
+            raise FileNotFoundError(f"Checkpoint file {candidate} does not exist")
+
+        run_id = str(resume_from)
+        ckpt_dir = Path(self._cfg.output.root_dir) / run_id / "checkpoints"
+        if not ckpt_dir.exists():
+            raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist")
+
+        mgr = CheckpointManager(ckpt_dir, keep_last_k=1)
+        latest = mgr.latest_checkpoint()
+        if latest is None:
+            raise FileNotFoundError(f"No checkpoints found in {ckpt_dir}")
+        return latest
+
+    def fit(
+        self,
+        *,
+        max_steps_override: int | None = None,
+        resume_from: str | Path | None = None,
+    ) -> TrainResult:
         """Run up to max_steps optimizer steps with gradient accumulation; return the result."""
         self._model.train()
         max_steps = (
@@ -129,8 +163,37 @@ class Trainer:
         log_every = self._cfg.trainer.log_every_steps
         save_every = self._cfg.trainer.save_every_steps
 
-        start_time = time.perf_counter()
         iterator = iter(self._train_loader)
+        start_step = 1
+        resume_step = 0
+        resumed_from_step: int | None = None
+        if resume_from is not None:
+            resume_path = self._resolve_resume_path(resume_from)
+            mgr = CheckpointManager(resume_path.parent, keep_last_k=1)
+            payload = mgr.load(resume_path)
+            if payload["config"] != self._cfg.model_dump():
+                logger.warning(
+                    "checkpoint: config mismatch detected; using current config for resume"
+                )
+            resume_step = self.restore(payload)
+            resumed_from_step = resume_step
+            start_step = resume_step + 1
+            if start_step > max_steps:
+                logger.info(
+                    "trainer: resume step %d >= max_steps %d; no further steps",
+                    resume_step,
+                    max_steps,
+                )
+
+        start_time = time.perf_counter()
+        if resume_step > 0:
+            batches_to_skip = resume_step * grad_accum_steps
+            for _ in range(batches_to_skip):
+                try:
+                    next(iterator)
+                except StopIteration:
+                    iterator = iter(self._train_loader)
+                    next(iterator)
         first_step_loss: float | None = None
         step_loss = 0.0
 
@@ -140,7 +203,7 @@ class Trainer:
         interval_tokens = 0
         interval_start = time.perf_counter()
 
-        for step in range(1, max_steps + 1):
+        for step in range(start_step, max_steps + 1):
             self._optimizer.zero_grad()
             accumulated_loss = 0.0
             step_tokens = 0
@@ -213,4 +276,5 @@ class Trainer:
             total_time=total_time,
             peak_memory=0.0,
             first_step_loss=first_step_loss,
+            resumed_from_step=resumed_from_step,
         )

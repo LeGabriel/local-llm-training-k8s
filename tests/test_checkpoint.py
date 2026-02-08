@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+import random
 from pathlib import Path
 
+import numpy as np
+import pytest
 import torch
 
 from llmtrain.config.schemas import RunConfig
@@ -49,6 +53,13 @@ def _training_config(max_steps: int, save_every_steps: int) -> RunConfig:
         "output": {"root_dir": "runs"},
     }
     return RunConfig.model_validate(payload)
+
+
+def _seed_all(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.use_deterministic_algorithms(True)
 
 
 def _make_objects(
@@ -262,3 +273,70 @@ def test_training_loop_always_saves_final_step(tmp_path: Path) -> None:
     ckpt_dir = tmp_path / "checkpoints"
     assert (ckpt_dir / "step_000010.pt").exists()
     assert (ckpt_dir / "step_000015.pt").exists()
+
+
+# ---------------------------------------------------------------------------
+# resume tests
+# ---------------------------------------------------------------------------
+
+
+def test_resume_continues_from_saved_step(tmp_path: Path) -> None:
+    """Resume continues from the saved step and reaches the new max_steps."""
+    cfg = _training_config(max_steps=20, save_every_steps=10)
+    _seed_all(123)
+    trainer = Trainer(cfg, run_dir=tmp_path / "first_run")
+    trainer.fit(max_steps_override=10)
+
+    ckpt_path = tmp_path / "first_run" / "checkpoints" / "step_000010.pt"
+    assert ckpt_path.exists()
+
+    _seed_all(999)
+    resumed_trainer = Trainer(cfg, run_dir=tmp_path / "resume_run")
+    result = resumed_trainer.fit(resume_from=ckpt_path)
+
+    assert result.final_step == 20
+    assert result.resumed_from_step == 10
+
+
+def test_resume_produces_same_loss_as_continuous_run(tmp_path: Path) -> None:
+    """Resume yields the same final loss as an uninterrupted run."""
+    cfg = _training_config(max_steps=20, save_every_steps=10)
+
+    _seed_all(123)
+    full_trainer = Trainer(cfg)
+    full_result = full_trainer.fit()
+
+    _seed_all(123)
+    partial_trainer = Trainer(cfg, run_dir=tmp_path / "partial_run")
+    partial_trainer.fit(max_steps_override=10)
+
+    ckpt_path = tmp_path / "partial_run" / "checkpoints" / "step_000010.pt"
+    assert ckpt_path.exists()
+
+    _seed_all(999)
+    resumed_trainer = Trainer(cfg, run_dir=tmp_path / "resume_run")
+    resumed_result = resumed_trainer.fit(resume_from=ckpt_path)
+
+    assert abs(full_result.final_loss - resumed_result.final_loss) <= 1e-5
+
+
+def test_resume_with_config_mismatch_warns(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A config mismatch between checkpoint and current config emits a warning."""
+    cfg = _training_config(max_steps=20, save_every_steps=10)
+    _seed_all(123)
+    trainer = Trainer(cfg, run_dir=tmp_path / "first_run")
+    trainer.fit(max_steps_override=10)
+
+    ckpt_path = tmp_path / "first_run" / "checkpoints" / "step_000010.pt"
+    assert ckpt_path.exists()
+
+    mismatched_cfg = _training_config(max_steps=30, save_every_steps=10)
+    mismatched_trainer = Trainer(mismatched_cfg)
+
+    with caplog.at_level(logging.WARNING, logger="llmtrain.training.trainer"):
+        mismatched_trainer.fit(resume_from=ckpt_path, max_steps_override=12)
+
+    assert any("config mismatch" in record.message for record in caplog.records)
