@@ -32,32 +32,40 @@ Production-style distributed training framework for decoder-only transformers, t
    uv sync --extra dev
    pre-commit install
    ```
-3) Run lint & tests (optional but recommended):
+3) Optional MLflow dependency (for v0.7+ tracking):
+   ```bash
+   uv sync --extra mlflow
+   ```
+   Or (editable install without `uv`):
+   ```bash
+   pip install -e '.[mlflow]'
+   ```
+4) Run lint & tests (optional but recommended):
    ```bash
    make lint
    make test
    ```
-4) CLI help:
+5) CLI help:
    ```bash
    python -m llmtrain --help
    ```
-5) Validate a config:
+6) Validate a config:
    ```bash
    python -m llmtrain validate --config configs/presets/example.yaml
    ```
-6) Inspect the resolved config (defaults materialized):
+7) Inspect the resolved config (defaults materialized):
    ```bash
    python -m llmtrain print-config --config configs/presets/example.yaml
    ```
-7) Train (creates `runs/<run_id>/` with config + metadata + checkpoints):
+8) Train (creates `runs/<run_id>/` with config + metadata + checkpoints):
    ```bash
    python -m llmtrain train --config configs/presets/example.yaml
    ```
-8) Resume from the latest checkpoint in a run:
+9) Resume from the latest checkpoint in a run:
    ```bash
    python -m llmtrain train --config configs/presets/example.yaml --resume <run_id>
    ```
-9) Resume from a specific checkpoint file:
+10) Resume from a specific checkpoint file:
    ```bash
    python -m llmtrain train --config configs/presets/example.yaml --resume runs/<run_id>/checkpoints/step_20.pt
    ```
