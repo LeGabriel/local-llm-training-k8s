@@ -192,6 +192,7 @@ class Trainer:
         )
         grad_accum_steps = self._cfg.trainer.grad_accum_steps
         log_every = self._cfg.trainer.log_every_steps
+        eval_every = self._cfg.trainer.eval_every_steps
         save_every = self._cfg.trainer.save_every_steps
 
         iterator = iter(self._train_loader)
@@ -226,6 +227,7 @@ class Trainer:
                     iterator = iter(self._train_loader)
                     next(iterator)
         first_step_loss: float | None = None
+        final_val_loss: float | None = None
         step_loss = 0.0
 
         # Metric logging state: running accumulators for the current log interval.
@@ -300,11 +302,27 @@ class Trainer:
                 interval_tokens = 0
                 interval_start = time.perf_counter()
 
+            if step % eval_every == 0 or step == max_steps:
+                eval_metrics = self._evaluate()
+                if eval_metrics:
+                    metrics_parts = "  ".join(
+                        f"{key}={value:.4f}" for key, value in sorted(eval_metrics.items())
+                    )
+                    logger.info(
+                        "val_step=%d/%d  %s",
+                        step,
+                        max_steps,
+                        metrics_parts,
+                    )
+                    val_loss = eval_metrics.get("val/loss")
+                    if val_loss is not None:
+                        final_val_loss = val_loss
+
         total_time = time.perf_counter() - start_time
         return TrainResult(
             final_step=max_steps,
             final_loss=step_loss,
-            final_val_loss=None,
+            final_val_loss=final_val_loss,
             total_time=total_time,
             peak_memory=0.0,
             first_step_loss=first_step_loss,

@@ -105,6 +105,8 @@ def format_run_summary(
             "total_time": train_result.total_time,
             "peak_memory": train_result.peak_memory,
         }
+        if train_result.final_val_loss is not None:
+            training_dict["final_val_loss"] = train_result.final_val_loss
         if train_result.resumed_from_step is not None:
             training_dict["resumed_from_step"] = train_result.resumed_from_step
         summary["training"] = training_dict
@@ -172,6 +174,8 @@ def format_run_summary(
             f"final_loss={train_result.final_loss:.4f} "
             f"total_time={train_result.total_time:.2f}s",
         ]
+        if train_result.final_val_loss is not None:
+            parts[0] += f" final_val_loss={train_result.final_val_loss:.4f}"
         if train_result.resumed_from_step is not None:
             parts[0] += f" resumed_from_step={train_result.resumed_from_step}"
         training_summary = parts[0]
