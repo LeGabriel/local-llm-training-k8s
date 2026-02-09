@@ -107,6 +107,8 @@ def format_run_summary(
         }
         if train_result.final_val_loss is not None:
             training_dict["final_val_loss"] = train_result.final_val_loss
+        if train_result.val_metrics:
+            training_dict["val_metrics"] = train_result.val_metrics
         if train_result.resumed_from_step is not None:
             training_dict["resumed_from_step"] = train_result.resumed_from_step
         summary["training"] = training_dict
@@ -167,6 +169,7 @@ def format_run_summary(
         )
 
     training_summary = None
+    validation_summary = None
     if train_result is not None:
         parts = [
             "Training: "
@@ -179,6 +182,11 @@ def format_run_summary(
         if train_result.resumed_from_step is not None:
             parts[0] += f" resumed_from_step={train_result.resumed_from_step}"
         training_summary = parts[0]
+        if train_result.val_metrics:
+            metric_text = " ".join(
+                f"{key}={value:.4f}" for key, value in sorted(train_result.val_metrics.items())
+            )
+            validation_summary = f"Validation: {metric_text}"
 
     lines = [
         "Planned run:",
@@ -196,4 +204,6 @@ def format_run_summary(
         lines.append(f"  {dry_run_summary}")
     if training_summary is not None:
         lines.append(f"  {training_summary}")
+    if validation_summary is not None:
+        lines.append(f"  {validation_summary}")
     return "\n".join(lines)

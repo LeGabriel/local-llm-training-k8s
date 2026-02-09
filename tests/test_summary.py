@@ -142,6 +142,42 @@ def test_format_run_summary_includes_final_val_loss() -> None:
     assert "final_val_loss=0.1230" in text_summary
 
 
+def test_format_run_summary_includes_val_metrics() -> None:
+    config = _minimal_config()
+    result = TrainResult(
+        final_step=10,
+        final_loss=1.234,
+        final_val_loss=0.123,
+        total_time=5.67,
+        peak_memory=0.0,
+        first_step_loss=3.456,
+        val_metrics={"val/loss": 0.123, "val/perplexity": 1.111},
+    )
+
+    json_summary = format_run_summary(
+        config=config,
+        run_id="run-train",
+        run_dir="runs/run-train",
+        json_output=True,
+        train_result=result,
+    )
+    assert isinstance(json_summary, dict)
+    training = json_summary["training"]
+    assert training["val_metrics"]["val/loss"] == 0.123
+    assert training["val_metrics"]["val/perplexity"] == 1.111
+
+    text_summary = format_run_summary(
+        config=config,
+        run_id="run-train",
+        run_dir="runs/run-train",
+        json_output=False,
+        train_result=result,
+    )
+    assert isinstance(text_summary, str)
+    assert "Validation:" in text_summary
+    assert "val/loss=0.1230" in text_summary
+
+
 # ---------------------------------------------------------------------------
 # resumed_from tests
 # ---------------------------------------------------------------------------

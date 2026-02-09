@@ -31,6 +31,7 @@ class TrainResult:
     final_val_loss: float | None
     total_time: float
     peak_memory: float
+    val_metrics: dict[str, float] | None = None
     first_step_loss: float | None = None
     resumed_from_step: int | None = None
 
@@ -228,6 +229,7 @@ class Trainer:
                     next(iterator)
         first_step_loss: float | None = None
         final_val_loss: float | None = None
+        final_val_metrics: dict[str, float] | None = None
         step_loss = 0.0
 
         # Metric logging state: running accumulators for the current log interval.
@@ -305,6 +307,7 @@ class Trainer:
             if step % eval_every == 0 or step == max_steps:
                 eval_metrics = self._evaluate()
                 if eval_metrics:
+                    final_val_metrics = eval_metrics
                     metrics_parts = "  ".join(
                         f"{key}={value:.4f}" for key, value in sorted(eval_metrics.items())
                     )
@@ -325,6 +328,7 @@ class Trainer:
             final_val_loss=final_val_loss,
             total_time=total_time,
             peak_memory=0.0,
+            val_metrics=final_val_metrics,
             first_step_loss=first_step_loss,
             resumed_from_step=resumed_from_step,
         )

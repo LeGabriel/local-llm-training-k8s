@@ -6,9 +6,10 @@ Production-style distributed training framework for decoder-only transformers, t
 - Keep it modular: `ModelAdapter`, `DataModule`, and `Trainer` are contract-based.
 - Reach "one command" local K8s training with checkpoints, metrics, and reproducible runs.
 
-## What exists today (v0.5)
+## What exists today (v0.6)
 - Real single-process training loop with gradient accumulation and LR schedule.
 - Checkpointing every `save_every_steps` with resume via `--resume`.
+- Periodic evaluation with `val/*` metrics and `final_val_loss` summary fields.
 - Config-driven CLI with strict validation and JSON output support.
 - Deterministic run directories with config + metadata snapshots.
 
@@ -21,7 +22,7 @@ Production-style distributed training framework for decoder-only transformers, t
 - **v1.1**: Kubernetes `kind` + IndexedJob orchestration.
 - **v1.2**: production hardening (signals, CI, docs polish).
 
-## Quickstart (v0.5 config-driven CLI)
+## Quickstart (v0.6 config-driven CLI)
 1) Install deps (uses `uv`):
    ```bash
    uv sync
