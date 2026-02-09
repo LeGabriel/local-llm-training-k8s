@@ -106,3 +106,94 @@ def test_format_run_summary_includes_train_result_text() -> None:
     assert "final_step=10" in text_summary
     assert "final_loss=1.2340" in text_summary
     assert "total_time=5.67s" in text_summary
+
+
+# ---------------------------------------------------------------------------
+# resumed_from tests
+# ---------------------------------------------------------------------------
+
+
+def test_format_run_summary_includes_resumed_from_json() -> None:
+    config = _minimal_config()
+    result = TrainResult(
+        final_step=20,
+        final_loss=0.5,
+        total_time=10.0,
+        peak_memory=0.0,
+        first_step_loss=2.0,
+        resumed_from_step=10,
+    )
+
+    json_summary = format_run_summary(
+        config=config,
+        run_id="run-resume",
+        run_dir="runs/run-resume",
+        json_output=True,
+        train_result=result,
+        resumed_from="some-run-id",
+    )
+
+    assert isinstance(json_summary, dict)
+    assert json_summary["resumed_from"] == "some-run-id"
+    assert "training" in json_summary
+    assert json_summary["training"]["resumed_from_step"] == 10
+
+
+def test_format_run_summary_includes_resumed_from_text() -> None:
+    config = _minimal_config()
+    result = TrainResult(
+        final_step=20,
+        final_loss=0.5,
+        total_time=10.0,
+        peak_memory=0.0,
+        first_step_loss=2.0,
+        resumed_from_step=10,
+    )
+
+    text_summary = format_run_summary(
+        config=config,
+        run_id="run-resume",
+        run_dir="runs/run-resume",
+        json_output=False,
+        train_result=result,
+        resumed_from="some-run-id",
+    )
+
+    assert isinstance(text_summary, str)
+    assert "Resumed from: some-run-id" in text_summary
+    assert "resumed_from_step=10" in text_summary
+
+
+def test_format_run_summary_omits_resumed_from_when_none() -> None:
+    config = _minimal_config()
+    result = TrainResult(
+        final_step=10,
+        final_loss=1.0,
+        total_time=5.0,
+        peak_memory=0.0,
+        first_step_loss=3.0,
+    )
+
+    json_summary = format_run_summary(
+        config=config,
+        run_id="run-no-resume",
+        run_dir="runs/run-no-resume",
+        json_output=True,
+        train_result=result,
+    )
+
+    assert isinstance(json_summary, dict)
+    assert "resumed_from" not in json_summary
+    assert "resumed_from_step" not in json_summary["training"]
+
+    text_summary = format_run_summary(
+        config=config,
+        run_id="run-no-resume",
+        run_dir="runs/run-no-resume",
+        json_output=False,
+        train_result=result,
+    )
+
+    assert isinstance(text_summary, str)
+    assert "Resumed from:" not in text_summary
+    assert "resumed_from_step" not in text_summary

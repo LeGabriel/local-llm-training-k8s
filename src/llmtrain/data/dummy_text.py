@@ -63,7 +63,8 @@ class DummyTextDataModule(DataModule):
         del tokenizer
         self._cfg = cfg
         vocab_size = cfg.model.vocab_size or 128
-        seq_len = max(1, min(cfg.model.block_size, 32))
+        # Keep synthetic batches tiny so unit tests are fast and stable.
+        seq_len = max(1, min(cfg.model.block_size, 8))
         max_steps = cfg.trainer.max_steps or 1
         micro_batch_size = cfg.trainer.micro_batch_size or 1
         requested = max_steps * micro_batch_size
@@ -80,6 +81,9 @@ class DummyTextDataModule(DataModule):
         if self._cfg is None or self._train_dataset is None:
             raise RuntimeError("setup must be called before train_dataloader")
         micro_batch_size = self._cfg.trainer.micro_batch_size or 1
+        # This is a synthetic dataset; multiprocessing adds massive overhead on macOS
+        # (worker spawn + importing torch) and provides no benefit.
+        num_workers = 0
         use_ddp = False
         world_size = self._cfg.ddp.world_size or 1
         rank = self._cfg.ddp.rank or 0
@@ -95,14 +99,14 @@ class DummyTextDataModule(DataModule):
                 self._train_dataset,
                 num_replicas=world_size,
                 rank=rank,
-                shuffle=True,
+                shuffle=not self._cfg.run.deterministic,
                 seed=self._cfg.run.seed,
             )
         return DataLoader(
             self._train_dataset,
             batch_size=micro_batch_size,
-            num_workers=self._cfg.data.num_workers,
-            shuffle=sampler is None,
+            num_workers=num_workers,
+            shuffle=sampler is None and not self._cfg.run.deterministic,
             sampler=sampler,
         )
 

@@ -6,6 +6,7 @@ import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TextIO
 
 import yaml
 
@@ -38,6 +39,7 @@ def _configure_logger(
     *,
     verbose: int,
     log_dir: Path | None = None,
+    stream: TextIO | None = None,
 ) -> logging.Logger:
     level = LOG_LEVELS.get(config_logging.level, logging.INFO)
     if verbose > 0:
@@ -52,6 +54,7 @@ def _configure_logger(
         json_output=config_logging.json_output,
         log_to_file=config_logging.log_to_file,
         file_name=file_name,
+        stream=stream,
     )
 
 
@@ -115,7 +118,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("train", parents=[common], help="Prepare a training run.")
+    train_parser = subparsers.add_parser("train", parents=[common], help="Prepare a training run.")
+    train_parser.add_argument(
+        "--resume",
+        default=None,
+        help="Resume from a run_id or checkpoint path.",
+    )
     subparsers.add_parser("validate", parents=[common], help="Validate a config file.")
     subparsers.add_parser(
         "print-config",
@@ -132,7 +140,11 @@ def _handle_validate(args: argparse.Namespace) -> int:
     except ConfigLoadError as exc:
         _emit_config_error(exc, json_output=args.json)
         return 2
-    _configure_logger(config.logging, verbose=args.verbose)
+    _configure_logger(
+        config.logging,
+        verbose=args.verbose,
+        stream=sys.stderr if args.json else None,
+    )
 
     if args.json:
         print(json.dumps({"status": "ok"}, indent=2))
@@ -147,7 +159,11 @@ def _handle_print_config(args: argparse.Namespace) -> int:
     except ConfigLoadError as exc:
         _emit_config_error(exc, json_output=args.json)
         return 2
-    _configure_logger(config.logging, verbose=args.verbose)
+    _configure_logger(
+        config.logging,
+        verbose=args.verbose,
+        stream=sys.stderr if args.json else None,
+    )
 
     payload = config.model_dump()
     if args.json:
@@ -167,7 +183,12 @@ def _handle_train(args: argparse.Namespace) -> int:
     root_dir = config.output.root_dir
     run_id = args.run_id or config.output.run_id or generate_run_id(config.run.name, root_dir)
     run_dir = create_run_directory(root_dir, run_id)
-    logger = _configure_logger(config.logging, verbose=args.verbose, log_dir=run_dir / "logs")
+    logger = _configure_logger(
+        config.logging,
+        verbose=args.verbose,
+        log_dir=run_dir / "logs",
+        stream=sys.stderr if args.json else None,
+    )
 
     if config.output.save_config_copy:
         write_resolved_config(run_dir, config)
@@ -226,9 +247,13 @@ def _handle_train(args: argparse.Namespace) -> int:
             train_logger.addHandler(handler)
             train_logger.propagate = False
 
+        resume_from = getattr(args, "resume", None)
+        if resume_from is not None:
+            logger.info("Resuming from: %s", resume_from)
+
         try:
-            trainer = Trainer(config)
-            train_result = trainer.fit()
+            trainer = Trainer(config, run_dir=run_dir)
+            train_result = trainer.fit(resume_from=resume_from)
         except Exception as exc:
             print(f"Training failed: {exc}", file=sys.stderr)
             return 1
@@ -239,6 +264,7 @@ def _handle_train(args: argparse.Namespace) -> int:
             run_dir=run_dir,
             json_output=args.json,
             train_result=train_result,
+            resumed_from=resume_from,
         )
 
     if args.json:

@@ -1,56 +1,71 @@
 # local-llm-training-k8s
-Production-style distributed training framework for decoder-only transformer models, built on PyTorch DDP and Kubernetes (kind), with MLflow tracking and pluggable model/data adapters
-
+Production-style distributed training framework for decoder-only transformers, targeting correctness-first CPU training today and a local Kubernetes DDP pipeline by v1.2.
 
 ## Goal
-- Minimal-yet-realistic training platform focused on CPU-based DDP correctness and reproducibility.
-- Pluggable architecture: `ModelAdapter`, `DataModule`, trainer separated by contracts.
-- Local K8s via kind and IndexedJob for multi-pod DDP; MLflow for params/metrics/artifacts; checkpoints are resumable.
+- Build a realistic, test-driven training stack for decoder-only GPT-style models.
+- Keep it modular: `ModelAdapter`, `DataModule`, and `Trainer` are contract-based.
+- Reach "one command" local K8s training with checkpoints, metrics, and reproducible runs.
 
-## Quickstart (v0.2 config-driven CLI)
-1) Install deps (uses `uv` with dev extras for tooling):
+## What exists today (v0.5)
+- Real single-process training loop with gradient accumulation and LR schedule.
+- Checkpointing every `save_every_steps` with resume via `--resume`.
+- Config-driven CLI with strict validation and JSON output support.
+- Deterministic run directories with config + metadata snapshots.
+
+## High-level roadmap
+- **v0.6**: evaluation loop and validation metrics.
+- **v0.7**: MLflow experiment tracking (optional dependency).
+- **v0.8**: real GPT decoder model (causal attention).
+- **v0.9**: real data pipeline (HuggingFace datasets + tokenizer).
+- **v1.0**: Distributed Data Parallel on a single machine.
+- **v1.1**: Kubernetes `kind` + IndexedJob orchestration.
+- **v1.2**: production hardening (signals, CI, docs polish).
+
+## Quickstart (v0.5 config-driven CLI)
+1) Install deps (uses `uv`):
+   ```bash
+   uv sync
+   ```
+2) Optional tooling for lint/test:
    ```bash
    uv sync --extra dev
-   ```
-2) Install pre-commit hooks:
-   ```bash
    pre-commit install
    ```
-3) Format code:
-   ```bash
-   make format
-   ```
-3) Lint & type check:
+3) Run lint & tests (optional but recommended):
    ```bash
    make lint
-   ```
-4) Run tests:
-   ```bash
    make test
    ```
-5) CLI help:
+4) CLI help:
    ```bash
    python -m llmtrain --help
    ```
-6) Validate a config:
+5) Validate a config:
    ```bash
    python -m llmtrain validate --config configs/presets/example.yaml
    ```
-7) Inspect the resolved config (defaults materialized):
+6) Inspect the resolved config (defaults materialized):
    ```bash
    python -m llmtrain print-config --config configs/presets/example.yaml
    ```
-8) Prepare a run (creates `runs/<run_id>/` with config + metadata):
+7) Train (creates `runs/<run_id>/` with config + metadata + checkpoints):
    ```bash
    python -m llmtrain train --config configs/presets/example.yaml
    ```
+8) Resume from the latest checkpoint in a run:
+   ```bash
+   python -m llmtrain train --config configs/presets/example.yaml --resume <run_id>
+   ```
+9) Resume from a specific checkpoint file:
+   ```bash
+   python -m llmtrain train --config configs/presets/example.yaml --resume runs/<run_id>/checkpoints/step_20.pt
+   ```
 
 Notes:
-- `train` currently runs a short dry-run loop (fake data) and emits summary output; full training is wired in later milestones.
-- `--dry-run` is accepted but currently a no-op (the dry-run loop always executes).
+- `--dry-run` runs a forward-only sanity check (no optimization).
 - Use `--json` on any command for machine-readable output.
 
-## Config structure (v0.2)
+## Config structure (v0.5)
 Configs are YAML files validated by Pydantic with strict fields. Example presets live in `configs/presets/`.
 
 ```yaml
@@ -81,11 +96,14 @@ When running `train`, a run directory is created under `output.root_dir`:
 - `runs/<run_id>/config.yaml`: resolved config (with defaults).
 - `runs/<run_id>/meta.json`: metadata snapshot (git SHA, argv, env).
 - `runs/<run_id>/logs/`: log files when `logging.log_to_file=true`.
+- `runs/<run_id>/checkpoints/`: periodic checkpoints (`step_<N>.pt`).
 
-## Repo layout (early milestone)
+## Repo layout (current)
 - `src/llmtrain/`: package code
   - `cli.py` / `__main__.py`: CLI entrypoint
-  - `config/`, `registry/`, `models/`, `data/`, `training/`, `utils/`: scaffolds for upcoming milestones
+  - `training/`: single-process trainer + checkpointing
+  - `models/`, `data/`: dummy adapters for fast CPU smoke tests
+  - `config/`, `registry/`, `utils/`: contracts and runtime plumbing
 - `tests/`: pytest suite (includes CLI smoke)
 - `pyproject.toml`: project + tool config (ruff, mypy, pytest)
 - `.pre-commit-config.yaml`: ruff/mypy hooks
@@ -94,3 +112,11 @@ When running `train`, a run directory is created under `output.root_dir`:
 ## Tooling
 - `ruff` for lint/format, `mypy` for types, `pytest` for tests, `pre-commit` for hooks.
 - `uv` manages the environment/lockfile.
+
+## Development process
+
+This project is built with AI-assisted developer tooling (e.g., Cursor / LLM copilots) as a productivity multiplier for iteration, refactoring, and documentation.
+
+All architecture, trade-offs, and final implementations are reviewed and owned by me. The codebase is validated via automated linting, type-checking, and tests, with a commit history intended to remain readable and reviewable.
+
+

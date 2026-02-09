@@ -5,7 +5,7 @@ import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 
 class JsonFormatter(logging.Formatter):
@@ -36,24 +36,26 @@ def configure_logging(
     json_output: bool = True,
     log_to_file: bool = False,
     file_name: str = "train.log",
+    stream: TextIO | None = None,
 ) -> logging.Logger:
     """Configure stdout (and optional file) logging for llmtrain."""
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
     formatter = _build_formatter(json_output=json_output)
+    target_stream = sys.stdout if stream is None else stream
 
     stdout_handler = next(
         (
             handler
             for handler in logger.handlers
             if isinstance(handler, logging.StreamHandler)
-            and getattr(handler, "stream", None) is sys.stdout
+            and getattr(handler, "stream", None) is target_stream
         ),
         None,
     )
     if stdout_handler is None:
-        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler = logging.StreamHandler(target_stream)
         logger.addHandler(stdout_handler)
     stdout_handler.setFormatter(formatter)
 

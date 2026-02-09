@@ -15,7 +15,7 @@ def _minimal_payload() -> dict[str, object]:
         "run": {"name": "dry-run-test"},
         "model": {"name": "dummy_gpt"},
         "data": {"name": "dummy_text"},
-        "trainer": {"max_steps": 5, "warmup_steps": 0},
+        "trainer": {"max_steps": 5, "warmup_steps": 0, "micro_batch_size": 1},
         "ddp": {},
         "mlflow": {},
         "logging": {"log_to_file": False},
