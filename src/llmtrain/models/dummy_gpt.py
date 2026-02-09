@@ -15,7 +15,11 @@ class _TinyGPT(nn.Module):
         super().__init__()
         self.embed = nn.Embedding(vocab_size, d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=1)
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=1,
+            enable_nested_tensor=False,
+        )
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
 
     def forward(

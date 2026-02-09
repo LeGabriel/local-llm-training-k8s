@@ -28,8 +28,10 @@ class TrainResult:
 
     final_step: int
     final_loss: float
+    final_val_loss: float | None
     total_time: float
     peak_memory: float
+    val_metrics: dict[str, float] | None = None
     first_step_loss: float | None = None
     resumed_from_step: int | None = None
 
@@ -60,6 +62,7 @@ class Trainer:
         tokenizer = self._adapter.build_tokenizer(cfg)
         data_module.setup(cfg, tokenizer=tokenizer)
         self._train_loader = data_module.train_dataloader()
+        self._val_loader = data_module.val_dataloader()
 
         self._device = torch.device("cpu")
         self._model = self._model.to(self._device)
@@ -148,6 +151,35 @@ class Trainer:
             raise FileNotFoundError(f"No checkpoints found in {ckpt_dir}")
         return latest
 
+    def _evaluate(self) -> dict[str, float] | None:
+        """Run a validation loop and return averaged metrics."""
+        if self._val_loader is None:
+            return None
+
+        was_training = self._model.training
+        self._model.eval()
+
+        metrics_sum: dict[str, float] = {}
+        batches = 0
+
+        with torch.no_grad():
+            for batch in self._val_loader:
+                batch = _move_batch(batch, self._device)
+                loss, metrics = self._adapter.compute_loss(self._model, batch)
+                batch_metrics = dict(metrics)
+                batch_metrics.setdefault("loss", float(loss.item()))
+                for key, value in batch_metrics.items():
+                    metrics_sum[key] = metrics_sum.get(key, 0.0) + float(value)
+                batches += 1
+
+        if was_training:
+            self._model.train()
+
+        if batches == 0:
+            return {}
+
+        return {f"val/{key}": value / batches for key, value in metrics_sum.items()}
+
     def fit(
         self,
         *,
@@ -161,6 +193,7 @@ class Trainer:
         )
         grad_accum_steps = self._cfg.trainer.grad_accum_steps
         log_every = self._cfg.trainer.log_every_steps
+        eval_every = self._cfg.trainer.eval_every_steps
         save_every = self._cfg.trainer.save_every_steps
 
         iterator = iter(self._train_loader)
@@ -195,6 +228,8 @@ class Trainer:
                     iterator = iter(self._train_loader)
                     next(iterator)
         first_step_loss: float | None = None
+        final_val_loss: float | None = None
+        final_val_metrics: dict[str, float] | None = None
         step_loss = 0.0
 
         # Metric logging state: running accumulators for the current log interval.
@@ -269,12 +304,31 @@ class Trainer:
                 interval_tokens = 0
                 interval_start = time.perf_counter()
 
+            if step % eval_every == 0 or step == max_steps:
+                eval_metrics = self._evaluate()
+                if eval_metrics:
+                    final_val_metrics = eval_metrics
+                    metrics_parts = "  ".join(
+                        f"{key}={value:.4f}" for key, value in sorted(eval_metrics.items())
+                    )
+                    logger.info(
+                        "val_step=%d/%d  %s",
+                        step,
+                        max_steps,
+                        metrics_parts,
+                    )
+                    val_loss = eval_metrics.get("val/loss")
+                    if val_loss is not None:
+                        final_val_loss = val_loss
+
         total_time = time.perf_counter() - start_time
         return TrainResult(
             final_step=max_steps,
             final_loss=step_loss,
+            final_val_loss=final_val_loss,
             total_time=total_time,
             peak_memory=0.0,
+            val_metrics=final_val_metrics,
             first_step_loss=first_step_loss,
             resumed_from_step=resumed_from_step,
         )

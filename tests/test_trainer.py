@@ -67,6 +67,16 @@ def test_trainer_fit_full_loop_step_count_and_loss_decreases() -> None:
     assert result.final_loss < result.first_step_loss
 
 
+def test_trainer_evaluate_returns_finite_metrics() -> None:
+    cfg = _minimal_config()
+    trainer = Trainer(cfg)
+
+    metrics = trainer._evaluate()
+    assert metrics is not None
+    assert metrics
+    assert all(math.isfinite(value) for value in metrics.values())
+
+
 def _scheduler_config(
     max_steps: int = 10,
     warmup_steps: int = 4,
@@ -159,8 +169,10 @@ def test_metric_logging_emits_structured_logs(
     with caplog.at_level(logging.INFO, logger="llmtrain.training.trainer"):
         trainer.fit()
 
-    # Filter only the structured step logs (key=value format).
-    step_logs = [r.message for r in caplog.records if "step=" in r.message]
+    # Filter only the structured step logs (exclude eval logs).
+    step_logs = [
+        r.message for r in caplog.records if "step=" in r.message and "val_step=" not in r.message
+    ]
 
     # max_steps=6, log_every=2 → logs at steps 2, 4, 6.
     assert len(step_logs) == 3
@@ -199,7 +211,9 @@ def test_metric_logging_last_step_always_logged(
     with caplog.at_level(logging.INFO, logger="llmtrain.training.trainer"):
         trainer.fit()
 
-    step_logs = [r.message for r in caplog.records if "step=" in r.message]
+    step_logs = [
+        r.message for r in caplog.records if "step=" in r.message and "val_step=" not in r.message
+    ]
 
     # Expect logs at step 3 (3 % 3 == 0) and step 5 (final step).
     assert len(step_logs) == 2
@@ -233,7 +247,9 @@ def test_metric_logging_tokens_per_sec_positive(
     with caplog.at_level(logging.INFO, logger="llmtrain.training.trainer"):
         trainer.fit()
 
-    step_logs = [r.message for r in caplog.records if "step=" in r.message]
+    step_logs = [
+        r.message for r in caplog.records if "step=" in r.message and "val_step=" not in r.message
+    ]
     assert len(step_logs) == 1
 
     # Extract tokens_per_sec value and verify it is positive.
@@ -246,3 +262,39 @@ def test_metric_logging_tokens_per_sec_positive(
             break
     else:
         pytest.fail("tokens_per_sec field not found in log message")
+
+
+def test_eval_logging_emits_at_expected_steps(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Eval log lines are emitted at eval_every_steps and final step."""
+    payload = {
+        "schema_version": 1,
+        "run": {"name": "eval-log-test"},
+        "model": {"name": "dummy_gpt"},
+        "data": {"name": "dummy_text"},
+        "trainer": {
+            "max_steps": 5,
+            "eval_every_steps": 2,
+            "log_every_steps": 10,
+            "warmup_steps": 0,
+            "micro_batch_size": 1,
+            "grad_accum_steps": 1,
+        },
+        "ddp": {},
+        "mlflow": {},
+        "logging": {"log_to_file": False},
+        "output": {"root_dir": "runs"},
+    }
+    cfg = RunConfig.model_validate(payload)
+    trainer = Trainer(cfg)
+
+    with caplog.at_level(logging.INFO, logger="llmtrain.training.trainer"):
+        trainer.fit()
+
+    eval_logs = [r.message for r in caplog.records if "val_step=" in r.message]
+    assert len(eval_logs) == 3
+    assert "val_step=2/5" in eval_logs[0]
+    assert "val_step=4/5" in eval_logs[1]
+    assert "val_step=5/5" in eval_logs[2]
+    assert "val/loss=" in eval_logs[0]

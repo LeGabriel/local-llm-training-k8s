@@ -34,7 +34,7 @@ trainer:
   warmup_steps: 2
   max_grad_norm: 1.0
   log_every_steps: 5
-  eval_every_steps: 10
+  eval_every_steps: 5
   save_every_steps: 10
 ddp:
   enabled: false

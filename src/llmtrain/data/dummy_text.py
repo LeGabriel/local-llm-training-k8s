@@ -58,6 +58,7 @@ class DummyTextDataModule(DataModule):
     def __init__(self) -> None:
         self._cfg: RunConfig | None = None
         self._train_dataset: Dataset[dict[str, torch.Tensor]] | None = None
+        self._val_dataset: Dataset[dict[str, torch.Tensor]] | None = None
 
     def setup(self, cfg: RunConfig, tokenizer: Any | None = None) -> None:
         del tokenizer
@@ -75,6 +76,14 @@ class DummyTextDataModule(DataModule):
             vocab_size=vocab_size,
             deterministic=cfg.run.deterministic,
             seed=cfg.run.seed,
+        )
+        val_examples = max(1, min(num_examples // 5, 32))
+        self._val_dataset = _DummyTextDataset(
+            num_examples=val_examples,
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            deterministic=cfg.run.deterministic,
+            seed=cfg.run.seed + 1000,
         )
 
     def train_dataloader(self) -> DataLoader:
@@ -111,4 +120,34 @@ class DummyTextDataModule(DataModule):
         )
 
     def val_dataloader(self) -> DataLoader | None:
-        return None
+        if self._cfg is None:
+            raise RuntimeError("setup must be called before val_dataloader")
+        if self._val_dataset is None:
+            return None
+        micro_batch_size = self._cfg.trainer.micro_batch_size or 1
+        num_workers = 0
+        use_ddp = False
+        world_size = self._cfg.ddp.world_size or 1
+        rank = self._cfg.ddp.rank or 0
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+            use_ddp = world_size > 1
+        elif world_size > 1:
+            use_ddp = True
+        sampler: DistributedSampler | None = None
+        if use_ddp:
+            sampler = DistributedSampler(
+                self._val_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=False,
+                seed=self._cfg.run.seed,
+            )
+        return DataLoader(
+            self._val_dataset,
+            batch_size=micro_batch_size,
+            num_workers=num_workers,
+            shuffle=False,
+            sampler=sampler,
+        )

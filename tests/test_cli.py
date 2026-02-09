@@ -196,6 +196,8 @@ def test_train_full_run_emits_training_summary(tmp_path: Path) -> None:
     assert training["first_step_loss"] is not None
     assert math.isfinite(training["first_step_loss"])
     assert math.isfinite(training["final_loss"])
+    assert "val_metrics" in training
+    assert math.isfinite(training["val_metrics"]["val/loss"])
 
 
 def test_train_full_run_text_output(tmp_path: Path) -> None:
@@ -231,6 +233,8 @@ def test_train_full_run_text_output(tmp_path: Path) -> None:
     assert "Training:" in result.stdout
     assert "final_step=" in result.stdout
     assert "final_loss=" in result.stdout
+    assert "Validation:" in result.stdout
+    assert "val/loss=" in result.stdout
 
 
 # ---------------------------------------------------------------------------
