@@ -60,6 +60,7 @@ def test_format_run_summary_includes_train_result_json() -> None:
     result = TrainResult(
         final_step=10,
         final_loss=1.234,
+        final_val_loss=None,
         total_time=5.67,
         peak_memory=0.0,
         first_step_loss=3.456,
@@ -88,6 +89,7 @@ def test_format_run_summary_includes_train_result_text() -> None:
     result = TrainResult(
         final_step=10,
         final_loss=1.234,
+        final_val_loss=None,
         total_time=5.67,
         peak_memory=0.0,
         first_step_loss=3.456,
@@ -118,6 +120,7 @@ def test_format_run_summary_includes_resumed_from_json() -> None:
     result = TrainResult(
         final_step=20,
         final_loss=0.5,
+        final_val_loss=None,
         total_time=10.0,
         peak_memory=0.0,
         first_step_loss=2.0,
@@ -144,6 +147,7 @@ def test_format_run_summary_includes_resumed_from_text() -> None:
     result = TrainResult(
         final_step=20,
         final_loss=0.5,
+        final_val_loss=None,
         total_time=10.0,
         peak_memory=0.0,
         first_step_loss=2.0,
@@ -169,6 +173,7 @@ def test_format_run_summary_omits_resumed_from_when_none() -> None:
     result = TrainResult(
         final_step=10,
         final_loss=1.0,
+        final_val_loss=None,
         total_time=5.0,
         peak_memory=0.0,
         first_step_loss=3.0,

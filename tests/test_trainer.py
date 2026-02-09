@@ -67,6 +67,16 @@ def test_trainer_fit_full_loop_step_count_and_loss_decreases() -> None:
     assert result.final_loss < result.first_step_loss
 
 
+def test_trainer_evaluate_returns_finite_metrics() -> None:
+    cfg = _minimal_config()
+    trainer = Trainer(cfg)
+
+    metrics = trainer._evaluate()
+    assert metrics is not None
+    assert metrics
+    assert all(math.isfinite(value) for value in metrics.values())
+
+
 def _scheduler_config(
     max_steps: int = 10,
     warmup_steps: int = 4,

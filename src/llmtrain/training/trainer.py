@@ -28,6 +28,7 @@ class TrainResult:
 
     final_step: int
     final_loss: float
+    final_val_loss: float | None
     total_time: float
     peak_memory: float
     first_step_loss: float | None = None
@@ -60,6 +61,7 @@ class Trainer:
         tokenizer = self._adapter.build_tokenizer(cfg)
         data_module.setup(cfg, tokenizer=tokenizer)
         self._train_loader = data_module.train_dataloader()
+        self._val_loader = data_module.val_dataloader()
 
         self._device = torch.device("cpu")
         self._model = self._model.to(self._device)
@@ -147,6 +149,35 @@ class Trainer:
         if latest is None:
             raise FileNotFoundError(f"No checkpoints found in {ckpt_dir}")
         return latest
+
+    def _evaluate(self) -> dict[str, float] | None:
+        """Run a validation loop and return averaged metrics."""
+        if self._val_loader is None:
+            return None
+
+        was_training = self._model.training
+        self._model.eval()
+
+        metrics_sum: dict[str, float] = {}
+        batches = 0
+
+        with torch.no_grad():
+            for batch in self._val_loader:
+                batch = _move_batch(batch, self._device)
+                loss, metrics = self._adapter.compute_loss(self._model, batch)
+                batch_metrics = dict(metrics)
+                batch_metrics.setdefault("loss", float(loss.item()))
+                for key, value in batch_metrics.items():
+                    metrics_sum[key] = metrics_sum.get(key, 0.0) + float(value)
+                batches += 1
+
+        if was_training:
+            self._model.train()
+
+        if batches == 0:
+            return {}
+
+        return {f"val/{key}": value / batches for key, value in metrics_sum.items()}
 
     def fit(
         self,
@@ -273,6 +304,7 @@ class Trainer:
         return TrainResult(
             final_step=max_steps,
             final_loss=step_loss,
+            final_val_loss=None,
             total_time=total_time,
             peak_memory=0.0,
             first_step_loss=first_step_loss,
