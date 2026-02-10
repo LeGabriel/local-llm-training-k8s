@@ -17,6 +17,7 @@ from llmtrain.config.schemas import RunConfig
 from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import get_data_module
 from llmtrain.registry.models import get_model_adapter
+from llmtrain.tracking import NullTracker, Tracker
 from llmtrain.training.checkpoint import CheckpointManager, CheckpointPayload
 
 logger = logging.getLogger(__name__)
@@ -49,8 +50,15 @@ def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 class Trainer:
     """Single-process trainer: one device, step-based loop with gradient accumulation."""
 
-    def __init__(self, cfg: RunConfig, *, run_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        cfg: RunConfig,
+        *,
+        run_dir: Path | None = None,
+        tracker: Tracker | None = None,
+    ) -> None:
         self._cfg = cfg
+        self._tracker: Tracker = tracker or NullTracker()
         initialize_registries()
 
         adapter_cls = get_model_adapter(cfg.model.name)
@@ -217,6 +225,7 @@ class Trainer:
                     resume_step,
                     max_steps,
                 )
+        self._tracker.log_params(self._cfg.model_dump())
 
         start_time = time.perf_counter()
         if resume_step > 0:
@@ -289,6 +298,13 @@ class Trainer:
                 avg_step_time = interval_time / interval_steps
                 tokens_per_sec = interval_tokens / interval_time if interval_time > 0 else 0.0
                 current_lr = float(self._scheduler.get_last_lr()[0])
+                self._tracker.log_metrics(
+                    {
+                        "train/loss": avg_loss,
+                        "train/lr": current_lr,
+                    },
+                    step=step,
+                )
                 logger.info(
                     "step=%d/%d  loss=%.4f  lr=%.6e  tokens_per_sec=%.1f  step_time=%.4fs",
                     step,
@@ -308,6 +324,7 @@ class Trainer:
                 eval_metrics = self._evaluate()
                 if eval_metrics:
                     final_val_metrics = eval_metrics
+                    self._tracker.log_metrics(eval_metrics, step=step)
                     metrics_parts = "  ".join(
                         f"{key}={value:.4f}" for key, value in sorted(eval_metrics.items())
                     )
