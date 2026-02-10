@@ -399,6 +399,40 @@ def _minimal_run_config(root_dir: Path) -> RunConfig:
     return RunConfig.model_validate(payload)
 
 
+def test_create_tracker_returns_null_tracker_when_mlflow_disabled(tmp_path: Path) -> None:
+    payload = _minimal_config(tmp_path / "runs")
+    payload["mlflow"] = {
+        "enabled": False,
+        "tracking_uri": "sqlite:///./mlflow.db",
+        "experiment": "disabled-test",
+        "run_name": None,
+    }
+    config = RunConfig.model_validate(payload)
+    logger = Mock()
+
+    tracker = cli_module._create_tracker(config, logger)
+
+    assert isinstance(tracker, cli_module.NullTracker)
+
+
+def test_create_tracker_falls_back_to_null_tracker_when_mlflow_unavailable(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    config = _minimal_run_config(tmp_path / "runs")
+    logger = Mock()
+
+    def raise_runtime_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("mlflow import failed")
+
+    monkeypatch.setattr(cli_module, "MLflowTracker", raise_runtime_error)
+
+    tracker = cli_module._create_tracker(config, logger)
+
+    assert isinstance(tracker, cli_module.NullTracker)
+    logger.warning.assert_called_once()
+    assert "MLflow unavailable; falling back to NullTracker" in logger.warning.call_args.args[0]
+
+
 def test_handle_train_wires_tracker_lifecycle_and_artifacts(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
@@ -461,6 +495,63 @@ def test_handle_train_wires_tracker_lifecycle_and_artifacts(
     trainer_ctor.assert_called_once_with(
         config,
         run_dir=tmp_path / "runs" / "cli-wiring-run",
+        tracker=tracker,
+    )
+
+
+def test_handle_train_always_ends_tracker_when_training_fails(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    config = _minimal_run_config(tmp_path / "runs")
+    args = argparse.Namespace(
+        config=str(tmp_path / "config.yaml"),
+        run_id="cli-failing-run",
+        dry_run=False,
+        json=False,
+        verbose=0,
+        resume=None,
+    )
+    tracker = Mock()
+
+    def fake_load_and_validate_config(_: str) -> tuple[RunConfig, str, str]:
+        return (config, "raw.yaml", "resolved.yaml")
+
+    def fake_create_run_directory(_: str, run_id: str) -> Path:
+        run_dir = tmp_path / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
+
+    def fake_write_resolved_config(run_dir: Path, _: RunConfig) -> None:
+        (run_dir / "config.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+
+    def fake_write_meta_json(run_dir: Path, _: dict[str, Any]) -> None:
+        (run_dir / "meta.json").write_text('{"ok": true}\n', encoding="utf-8")
+
+    monkeypatch.setattr(cli_module, "load_and_validate_config", fake_load_and_validate_config)
+    monkeypatch.setattr(cli_module, "create_run_directory", fake_create_run_directory)
+    monkeypatch.setattr(cli_module, "write_resolved_config", fake_write_resolved_config)
+    monkeypatch.setattr(cli_module, "write_meta_json", fake_write_meta_json)
+    monkeypatch.setattr(cli_module, "_create_tracker", lambda *_: tracker)
+    monkeypatch.setattr(cli_module, "initialize_registries", lambda: None)
+    monkeypatch.setattr(cli_module, "get_model_adapter", lambda _: object)
+    monkeypatch.setattr(cli_module, "get_data_module", lambda _: object)
+    monkeypatch.setattr(cli_module, "_configure_logger", lambda *_, **__: Mock())
+    monkeypatch.setattr(cli_module, "generate_meta", lambda **_: {"meta": "ok"})
+    monkeypatch.setattr(cli_module, "format_run_summary", lambda **_: "ok")
+
+    trainer_instance = Mock()
+    trainer_instance.fit.side_effect = RuntimeError("boom")
+    trainer_ctor = Mock(return_value=trainer_instance)
+    monkeypatch.setattr(cli_module, "Trainer", trainer_ctor)
+
+    rc = cli_module._handle_train(args)
+
+    assert rc == 1
+    tracker.start_run.assert_called_once_with(run_name="cli-failing-run")
+    tracker.end_run.assert_called_once_with()
+    trainer_ctor.assert_called_once_with(
+        config,
+        run_dir=tmp_path / "runs" / "cli-failing-run",
         tracker=tracker,
     )
 
