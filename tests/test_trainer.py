@@ -50,8 +50,8 @@ def test_trainer_fit_full_loop_step_count_and_loss_decreases() -> None:
         "model": {"name": "dummy_gpt"},
         "data": {"name": "dummy_text"},
         "trainer": {
-            "max_steps": 10,
-            "micro_batch_size": 1,
+            "max_steps": 50,
+            "micro_batch_size": 2,
             "grad_accum_steps": 2,
             "warmup_steps": 0,
         },
@@ -63,8 +63,48 @@ def test_trainer_fit_full_loop_step_count_and_loss_decreases() -> None:
     cfg = RunConfig.model_validate(payload)
     trainer = Trainer(cfg)
     result = trainer.fit()
-    assert result.final_step == 10
+    assert result.final_step == 50
     assert result.first_step_loss is not None
+    assert result.final_val_loss is not None
+    assert result.final_val_loss < result.first_step_loss
+
+
+def test_trainer_fit_gpt_smoke_loss_decreases() -> None:
+    payload = {
+        "schema_version": 1,
+        "run": {"name": "trainer-gpt-smoke-test", "deterministic": True},
+        "model": {
+            "name": "gpt",
+            "block_size": 8,
+            "d_model": 64,
+            "n_layers": 2,
+            "n_heads": 2,
+            "d_ff": 128,
+            "dropout": 0.0,
+            "tie_embeddings": True,
+            "vocab_size": 16,
+        },
+        "data": {"name": "dummy_text"},
+        "trainer": {
+            "max_steps": 100,
+            "micro_batch_size": 4,
+            "grad_accum_steps": 2,
+            "lr": 3e-3,
+            "warmup_steps": 0,
+        },
+        "ddp": {},
+        "mlflow": {},
+        "logging": {"log_to_file": False},
+        "output": {"root_dir": "runs"},
+    }
+    cfg = RunConfig.model_validate(payload)
+    trainer = Trainer(cfg)
+    result = trainer.fit()
+
+    assert result.final_step == 100
+    assert result.first_step_loss is not None
+    assert result.final_val_loss is not None
+    assert result.final_loss is not None
     assert result.final_loss < result.first_step_loss
 
 
