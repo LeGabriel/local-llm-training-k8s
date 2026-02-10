@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import math
-from typing import cast
+from typing import Any, cast
 
 import torch
 from torch import nn
+
+from llmtrain.config.schemas import RunConfig
+from llmtrain.models.base import ModelAdapter
+from llmtrain.registry.models import register_model
 
 
 class CausalSelfAttention(nn.Module):
@@ -177,3 +181,85 @@ class GPT(nn.Module):
             x = block(x, attention_mask=attention_mask)
         x = self.ln_f(x)
         return self.lm_head(x)
+
+
+@register_model("gpt")
+class GPTAdapter(ModelAdapter):
+    """Model adapter for the decoder-only GPT implementation."""
+
+    def build_model(self, cfg: RunConfig) -> nn.Module:
+        vocab_size = cfg.model.vocab_size or 128
+        return GPT(
+            vocab_size=vocab_size,
+            block_size=cfg.model.block_size,
+            d_model=cfg.model.d_model,
+            n_layers=cfg.model.n_layers,
+            n_heads=cfg.model.n_heads,
+            d_ff=cfg.model.d_ff,
+            dropout=cfg.model.dropout,
+            tie_embeddings=cfg.model.tie_embeddings,
+        )
+
+    def build_tokenizer(self, cfg: RunConfig) -> Any | None:
+        return None
+
+    def compute_loss(
+        self, model: nn.Module, batch: dict[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        input_ids = batch["input_ids"]
+        labels = batch["labels"]
+        attention_mask = batch.get("attention_mask")
+
+        if input_ids.dim() != 2 or labels.dim() != 2:
+            raise ValueError(
+                f"Expected input_ids and labels to be 2D (B, T); "
+                f"got {tuple(input_ids.shape)} and {tuple(labels.shape)}."
+            )
+        if input_ids.shape != labels.shape:
+            raise ValueError(
+                "Expected input_ids and labels to have the same shape; "
+                f"got {tuple(input_ids.shape)} vs {tuple(labels.shape)}."
+            )
+        if input_ids.dtype != torch.long or labels.dtype != torch.long:
+            raise ValueError(
+                "Expected input_ids and labels to be torch.long; "
+                f"got {input_ids.dtype} and {labels.dtype}."
+            )
+        if input_ids.size(1) < 2:
+            raise ValueError("Expected sequence length >= 2 for next-token loss.")
+
+        if attention_mask is not None:
+            if attention_mask.dim() != 2:
+                raise ValueError(
+                    f"Expected attention_mask to be 2D (B, T); got {tuple(attention_mask.shape)}."
+                )
+            if attention_mask.shape != input_ids.shape:
+                raise ValueError(
+                    "Expected attention_mask to match input_ids shape; "
+                    f"got {tuple(attention_mask.shape)} vs {tuple(input_ids.shape)}."
+                )
+            if attention_mask.dtype not in (torch.bool, torch.long, torch.int64):
+                raise ValueError(
+                    f"Expected attention_mask to be bool or int64; got {attention_mask.dtype}."
+                )
+
+        logits = model(input_ids, attention_mask=attention_mask)
+        shifted_logits = logits[:, :-1, :]
+        shifted_labels = labels[:, 1:]
+
+        loss_per_token = nn.functional.cross_entropy(
+            shifted_logits.reshape(-1, shifted_logits.size(-1)),
+            shifted_labels.reshape(-1),
+            reduction="none",
+        )
+
+        if attention_mask is None:
+            loss = loss_per_token.mean()
+        else:
+            token_mask = attention_mask[:, 1:].to(dtype=torch.bool).reshape(-1)
+            valid_count = int(token_mask.sum().item())
+            if valid_count == 0:
+                raise ValueError("attention_mask has no valid target tokens after shift.")
+            loss = loss_per_token[token_mask].mean()
+
+        return loss, {"loss": float(loss.item())}

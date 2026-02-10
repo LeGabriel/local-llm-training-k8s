@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from importlib import import_module
 
-MODEL_REGISTRY_MODULES: tuple[str, ...] = ("llmtrain.models.dummy_gpt",)
+MODEL_REGISTRY_MODULES: tuple[str, ...] = (
+    "llmtrain.models.dummy_gpt",
+    "llmtrain.models.gpt",
+)
 DATA_REGISTRY_MODULES: tuple[str, ...] = ("llmtrain.data.dummy_text",)
 
 
