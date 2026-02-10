@@ -74,6 +74,25 @@ Notes:
 - `--dry-run` runs a forward-only sanity check (no optimization).
 - Use `--json` on any command for machine-readable output.
 
+## MLflow tracking (v0.7)
+
+Install the optional MLflow dependency, then run the MLflow preset:
+
+```bash
+uv sync --extra mlflow
+python -m llmtrain train --config configs/presets/ddp_mlflow.yaml
+```
+
+The `ddp_mlflow` preset is configured with a local SQLite backend URI
+(`sqlite:///./mlflow.db`). After training, open the MLflow UI with:
+
+```bash
+mlflow ui --backend-store-uri sqlite:///./mlflow.db
+```
+
+You should see the run with logged params, metrics (`train/loss`, `train/lr`,
+`val/loss`), and artifacts (`config.yaml`, `meta.json`).
+
 ## Config structure (v0.5)
 Configs are YAML files validated by Pydantic with strict fields. Example presets live in `configs/presets/`.
 
