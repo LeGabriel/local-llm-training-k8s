@@ -4,7 +4,7 @@ run:
   seed: 42
   device: "cpu"
   deterministic: true
-  notes: "Example with DDP overrides and MLflow run naming."
+  notes: "v0.7 example: DDP preset with MLflow tracking on local SQLite backend."
 model:
   name: "dummy_gpt"
   init: "random"
@@ -17,14 +17,14 @@ model:
   tie_embeddings: true
   vocab_size: 32000
 data:
-  name: "local-text"
+  name: "dummy_text"
   cache_dir: ".cache/datasets"
   num_workers: 0
   train_split: "train"
   val_split: "validation"
-  dataset_name: null
-  dataset_config: null
-  text_column: null
+  dataset_name: "wikitext"
+  dataset_config: "wikitext-2-raw-v1"
+  text_column: "text"
 trainer:
   max_steps: 500
   micro_batch_size: 4
@@ -40,18 +40,18 @@ ddp:
   enabled: true
   backend: "gloo"
   init_method: "env://"
-  timeout_sec: 900
+  timeout_sec: 1800
   find_unused_parameters: false
-  rank: 0
-  world_size: 2
-  local_rank: 0
-  master_addr: "127.0.0.1"
-  master_port: 29500
+  rank: null
+  world_size: null
+  local_rank: null
+  master_addr: null
+  master_port: null
 mlflow:
   enabled: true
-  tracking_uri: "file:./mlruns"
+  tracking_uri: "sqlite:///./mlflow.db"
   experiment: "llm-train-k8s"
-  run_name: "ddp-demo-run"
+  run_name: "v0.7-ddp-mlflow-demo"
   log_models: false
 logging:
   level: "DEBUG"

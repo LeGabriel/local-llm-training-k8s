@@ -12,12 +12,13 @@ import yaml
 
 from llmtrain import __version__
 from llmtrain.config.loader import ConfigLoadError, load_and_validate_config
-from llmtrain.config.schemas import LoggingConfig
+from llmtrain.config.schemas import LoggingConfig, RunConfig
 from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import RegistryError as DataRegistryError
 from llmtrain.registry.data import get_data_module
 from llmtrain.registry.models import RegistryError as ModelRegistryError
 from llmtrain.registry.models import get_model_adapter
+from llmtrain.tracking import MLflowTracker, NullTracker, Tracker
 from llmtrain.training import Trainer
 from llmtrain.training.dry_run import run_dry_run
 from llmtrain.utils.logging import configure_logging
@@ -72,6 +73,29 @@ def _emit_config_error(error: ConfigLoadError, *, json_output: bool) -> None:
     print(f"Config error: {error.message}", file=sys.stderr)
     if error.details:
         print(error.details, file=sys.stderr)
+
+
+def _create_tracker(config: RunConfig, logger: logging.Logger) -> Tracker:
+    mlflow_cfg = config.mlflow
+    if not mlflow_cfg.enabled:
+        return NullTracker()
+
+    try:
+        return MLflowTracker(
+            tracking_uri=mlflow_cfg.tracking_uri,
+            experiment=mlflow_cfg.experiment,
+            run_name=mlflow_cfg.run_name,
+        )
+    except RuntimeError as exc:
+        logger.warning("MLflow unavailable; falling back to NullTracker: %s", exc)
+        return NullTracker()
+
+
+def _log_run_artifacts(tracker: Tracker, run_dir: Path) -> None:
+    for artifact_name in ("config.yaml", "meta.json"):
+        artifact_path = run_dir / artifact_name
+        if artifact_path.exists():
+            tracker.log_artifact(artifact_path, artifact_path="artifacts")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -209,68 +233,76 @@ def _handle_train(args: argparse.Namespace) -> int:
         _emit_config_error(ConfigLoadError(str(exc)), json_output=args.json)
         return 2
 
-    if args.dry_run:
-        # --- Dry-run path (forward-only sanity check) ---
-        dry_run_logger = logger
+    tracker = _create_tracker(config, logger)
+    try:
+        tracker.start_run(run_name=config.mlflow.run_name or run_id)
+
+        if args.dry_run:
+            # --- Dry-run path (forward-only sanity check) ---
+            dry_run_logger = logger
+            if args.json:
+                dry_run_logger = logging.getLogger("llmtrain.dry_run")
+                dry_run_logger.setLevel(logger.level)
+                dry_run_logger.handlers.clear()
+                handler = logging.StreamHandler(sys.stderr)
+                handler.setFormatter(logger.handlers[0].formatter if logger.handlers else None)
+                dry_run_logger.addHandler(handler)
+                dry_run_logger.propagate = False
+
+            try:
+                dry_run_result = run_dry_run(config, logger=dry_run_logger)
+            except Exception as exc:
+                print(f"Dry-run failed: {exc}", file=sys.stderr)
+                return 1
+
+            summary = format_run_summary(
+                config=config,
+                run_id=run_id,
+                run_dir=run_dir,
+                json_output=args.json,
+                resolved_model_adapter=dry_run_result.resolved_model_adapter,
+                resolved_data_module=dry_run_result.resolved_data_module,
+                dry_run_steps_executed=dry_run_result.steps_executed,
+            )
+        else:
+            # --- Full training path ---
+            if args.json:
+                train_logger = logging.getLogger("llmtrain.training.trainer")
+                train_logger.setLevel(logger.level)
+                train_logger.handlers.clear()
+                handler = logging.StreamHandler(sys.stderr)
+                handler.setFormatter(logger.handlers[0].formatter if logger.handlers else None)
+                train_logger.addHandler(handler)
+                train_logger.propagate = False
+
+            resume_from = getattr(args, "resume", None)
+            if resume_from is not None:
+                logger.info("Resuming from: %s", resume_from)
+
+            try:
+                trainer = Trainer(config, run_dir=run_dir, tracker=tracker)
+                train_result = trainer.fit(resume_from=resume_from)
+            except Exception as exc:
+                print(f"Training failed: {exc}", file=sys.stderr)
+                return 1
+
+            summary = format_run_summary(
+                config=config,
+                run_id=run_id,
+                run_dir=run_dir,
+                json_output=args.json,
+                train_result=train_result,
+                resumed_from=resume_from,
+            )
+
+        _log_run_artifacts(tracker, run_dir)
+
         if args.json:
-            dry_run_logger = logging.getLogger("llmtrain.dry_run")
-            dry_run_logger.setLevel(logger.level)
-            dry_run_logger.handlers.clear()
-            handler = logging.StreamHandler(sys.stderr)
-            handler.setFormatter(logger.handlers[0].formatter if logger.handlers else None)
-            dry_run_logger.addHandler(handler)
-            dry_run_logger.propagate = False
-
-        try:
-            dry_run_result = run_dry_run(config, logger=dry_run_logger)
-        except Exception as exc:
-            print(f"Dry-run failed: {exc}", file=sys.stderr)
-            return 1
-
-        summary = format_run_summary(
-            config=config,
-            run_id=run_id,
-            run_dir=run_dir,
-            json_output=args.json,
-            resolved_model_adapter=dry_run_result.resolved_model_adapter,
-            resolved_data_module=dry_run_result.resolved_data_module,
-            dry_run_steps_executed=dry_run_result.steps_executed,
-        )
-    else:
-        # --- Full training path ---
-        if args.json:
-            train_logger = logging.getLogger("llmtrain.training.trainer")
-            train_logger.setLevel(logger.level)
-            train_logger.handlers.clear()
-            handler = logging.StreamHandler(sys.stderr)
-            handler.setFormatter(logger.handlers[0].formatter if logger.handlers else None)
-            train_logger.addHandler(handler)
-            train_logger.propagate = False
-
-        resume_from = getattr(args, "resume", None)
-        if resume_from is not None:
-            logger.info("Resuming from: %s", resume_from)
-
-        try:
-            trainer = Trainer(config, run_dir=run_dir)
-            train_result = trainer.fit(resume_from=resume_from)
-        except Exception as exc:
-            print(f"Training failed: {exc}", file=sys.stderr)
-            return 1
-
-        summary = format_run_summary(
-            config=config,
-            run_id=run_id,
-            run_dir=run_dir,
-            json_output=args.json,
-            train_result=train_result,
-            resumed_from=resume_from,
-        )
-
-    if args.json:
-        print(json.dumps(summary, indent=2))
-    else:
-        print(summary)
+            print(json.dumps(summary, indent=2))
+        else:
+            print(summary)
+    finally:
+        tracker.end_run()
 
     return 0
 

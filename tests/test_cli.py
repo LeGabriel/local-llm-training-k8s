@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import Mock
 
 import yaml
 
 import llmtrain
+from llmtrain import cli as cli_module
+from llmtrain.config.schemas import RunConfig
 
 
 def test_imports() -> None:
@@ -374,3 +378,258 @@ def test_train_resume_by_path(tmp_path: Path) -> None:
     assert summary2["training"]["final_step"] == 20
     assert summary2["training"]["resumed_from_step"] == 10
     assert summary2["resumed_from"] == str(ckpt_path)
+
+
+def _minimal_run_config(root_dir: Path) -> RunConfig:
+    payload = _minimal_config(root_dir)
+    payload["trainer"] = {
+        "max_steps": 1,
+        "warmup_steps": 0,
+        "log_every_steps": 1,
+        "eval_every_steps": 1,
+        "micro_batch_size": 1,
+        "grad_accum_steps": 1,
+    }
+    payload["mlflow"] = {
+        "enabled": True,
+        "tracking_uri": "sqlite:///./mlflow.db",
+        "experiment": "cli-test",
+        "run_name": None,
+    }
+    return RunConfig.model_validate(payload)
+
+
+def test_create_tracker_returns_null_tracker_when_mlflow_disabled(tmp_path: Path) -> None:
+    payload = _minimal_config(tmp_path / "runs")
+    payload["mlflow"] = {
+        "enabled": False,
+        "tracking_uri": "sqlite:///./mlflow.db",
+        "experiment": "disabled-test",
+        "run_name": None,
+    }
+    config = RunConfig.model_validate(payload)
+    logger = Mock()
+
+    tracker = cli_module._create_tracker(config, logger)
+
+    assert isinstance(tracker, cli_module.NullTracker)
+
+
+def test_create_tracker_falls_back_to_null_tracker_when_mlflow_unavailable(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    config = _minimal_run_config(tmp_path / "runs")
+    logger = Mock()
+
+    def raise_runtime_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("mlflow import failed")
+
+    monkeypatch.setattr(cli_module, "MLflowTracker", raise_runtime_error)
+
+    tracker = cli_module._create_tracker(config, logger)
+
+    assert isinstance(tracker, cli_module.NullTracker)
+    logger.warning.assert_called_once()
+    assert "MLflow unavailable; falling back to NullTracker" in logger.warning.call_args.args[0]
+
+
+def test_handle_train_wires_tracker_lifecycle_and_artifacts(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    config = _minimal_run_config(tmp_path / "runs")
+    args = argparse.Namespace(
+        config=str(tmp_path / "config.yaml"),
+        run_id="cli-wiring-run",
+        dry_run=False,
+        json=False,
+        verbose=0,
+        resume=None,
+    )
+    tracker = Mock()
+
+    def fake_load_and_validate_config(_: str) -> tuple[RunConfig, str, str]:
+        return (config, "raw.yaml", "resolved.yaml")
+
+    def fake_create_run_directory(_: str, run_id: str) -> Path:
+        run_dir = tmp_path / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
+
+    def fake_write_resolved_config(run_dir: Path, _: RunConfig) -> None:
+        (run_dir / "config.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+
+    def fake_write_meta_json(run_dir: Path, _: dict[str, Any]) -> None:
+        (run_dir / "meta.json").write_text('{"ok": true}\n', encoding="utf-8")
+
+    monkeypatch.setattr(cli_module, "load_and_validate_config", fake_load_and_validate_config)
+    monkeypatch.setattr(cli_module, "create_run_directory", fake_create_run_directory)
+    monkeypatch.setattr(cli_module, "write_resolved_config", fake_write_resolved_config)
+    monkeypatch.setattr(cli_module, "write_meta_json", fake_write_meta_json)
+    monkeypatch.setattr(cli_module, "_create_tracker", lambda *_: tracker)
+    monkeypatch.setattr(cli_module, "initialize_registries", lambda: None)
+    monkeypatch.setattr(cli_module, "get_model_adapter", lambda _: object)
+    monkeypatch.setattr(cli_module, "get_data_module", lambda _: object)
+    monkeypatch.setattr(cli_module, "_configure_logger", lambda *_, **__: Mock())
+    monkeypatch.setattr(cli_module, "generate_meta", lambda **_: {"meta": "ok"})
+    monkeypatch.setattr(cli_module, "format_run_summary", lambda **_: "ok")
+
+    trainer_result = Mock()
+    trainer_result.final_step = 1
+    trainer_instance = Mock()
+    trainer_instance.fit.return_value = trainer_result
+    trainer_ctor = Mock(return_value=trainer_instance)
+    monkeypatch.setattr(cli_module, "Trainer", trainer_ctor)
+
+    rc = cli_module._handle_train(args)
+    assert rc == 0
+    tracker.start_run.assert_called_once_with(run_name="cli-wiring-run")
+    tracker.log_artifact.assert_any_call(
+        tmp_path / "runs" / "cli-wiring-run" / "config.yaml",
+        artifact_path="artifacts",
+    )
+    tracker.log_artifact.assert_any_call(
+        tmp_path / "runs" / "cli-wiring-run" / "meta.json",
+        artifact_path="artifacts",
+    )
+    tracker.end_run.assert_called_once_with()
+    trainer_ctor.assert_called_once_with(
+        config,
+        run_dir=tmp_path / "runs" / "cli-wiring-run",
+        tracker=tracker,
+    )
+
+
+def test_handle_train_always_ends_tracker_when_training_fails(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    config = _minimal_run_config(tmp_path / "runs")
+    args = argparse.Namespace(
+        config=str(tmp_path / "config.yaml"),
+        run_id="cli-failing-run",
+        dry_run=False,
+        json=False,
+        verbose=0,
+        resume=None,
+    )
+    tracker = Mock()
+
+    def fake_load_and_validate_config(_: str) -> tuple[RunConfig, str, str]:
+        return (config, "raw.yaml", "resolved.yaml")
+
+    def fake_create_run_directory(_: str, run_id: str) -> Path:
+        run_dir = tmp_path / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
+
+    def fake_write_resolved_config(run_dir: Path, _: RunConfig) -> None:
+        (run_dir / "config.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+
+    def fake_write_meta_json(run_dir: Path, _: dict[str, Any]) -> None:
+        (run_dir / "meta.json").write_text('{"ok": true}\n', encoding="utf-8")
+
+    monkeypatch.setattr(cli_module, "load_and_validate_config", fake_load_and_validate_config)
+    monkeypatch.setattr(cli_module, "create_run_directory", fake_create_run_directory)
+    monkeypatch.setattr(cli_module, "write_resolved_config", fake_write_resolved_config)
+    monkeypatch.setattr(cli_module, "write_meta_json", fake_write_meta_json)
+    monkeypatch.setattr(cli_module, "_create_tracker", lambda *_: tracker)
+    monkeypatch.setattr(cli_module, "initialize_registries", lambda: None)
+    monkeypatch.setattr(cli_module, "get_model_adapter", lambda _: object)
+    monkeypatch.setattr(cli_module, "get_data_module", lambda _: object)
+    monkeypatch.setattr(cli_module, "_configure_logger", lambda *_, **__: Mock())
+    monkeypatch.setattr(cli_module, "generate_meta", lambda **_: {"meta": "ok"})
+    monkeypatch.setattr(cli_module, "format_run_summary", lambda **_: "ok")
+
+    trainer_instance = Mock()
+    trainer_instance.fit.side_effect = RuntimeError("boom")
+    trainer_ctor = Mock(return_value=trainer_instance)
+    monkeypatch.setattr(cli_module, "Trainer", trainer_ctor)
+
+    rc = cli_module._handle_train(args)
+
+    assert rc == 1
+    tracker.start_run.assert_called_once_with(run_name="cli-failing-run")
+    tracker.end_run.assert_called_once_with()
+    trainer_ctor.assert_called_once_with(
+        config,
+        run_dir=tmp_path / "runs" / "cli-failing-run",
+        tracker=tracker,
+    )
+
+
+def test_cli_train_with_mlflow_end_to_end(tmp_path: Path) -> None:
+    import mlflow
+
+    root_dir = tmp_path / "runs"
+    tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    artifact_root = tmp_path / "mlartifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    experiment_name = "cli-e2e-mlflow"
+
+    client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
+    client.create_experiment(experiment_name, artifact_location=artifact_root.as_uri())
+
+    payload = _minimal_config(root_dir)
+    payload["run"] = {"name": "cli-mlflow-e2e"}
+    payload["trainer"] = {
+        "max_steps": 4,
+        "warmup_steps": 0,
+        "log_every_steps": 2,
+        "eval_every_steps": 2,
+        "micro_batch_size": 1,
+        "grad_accum_steps": 1,
+    }
+    payload["mlflow"] = {
+        "enabled": True,
+        "tracking_uri": tracking_uri,
+        "experiment": experiment_name,
+        "run_name": "cli-e2e-run",
+    }
+    payload["output"] = {
+        "root_dir": str(root_dir),
+        "save_config_copy": True,
+        "save_meta_json": True,
+    }
+    config_path = _write_config(tmp_path, payload)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "llmtrain",
+            "train",
+            "--config",
+            str(config_path),
+            "--run-id",
+            "cli-mlflow-e2e",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+
+    summary = json.loads(result.stdout)
+    assert summary["run_id"] == "cli-mlflow-e2e"
+
+    experiment = client.get_experiment_by_name(experiment_name)
+    assert experiment is not None
+    runs = client.search_runs(
+        experiment_ids=[experiment.experiment_id],
+        filter_string="tags.mlflow.runName = 'cli-e2e-run'",
+        max_results=1,
+        order_by=["attributes.start_time DESC"],
+    )
+    assert runs, "Expected at least one MLflow run created by CLI training"
+    run = runs[0]
+
+    assert run.data.params["run.name"] == "cli-mlflow-e2e"
+    assert "train/loss" in run.data.metrics
+    assert "train/lr" in run.data.metrics
+    assert "val/loss" in run.data.metrics
+
+    artifact_paths = [
+        item.path for item in client.list_artifacts(run.info.run_id, path="artifacts")
+    ]
+    assert "artifacts/config.yaml" in artifact_paths
+    assert "artifacts/meta.json" in artifact_paths

@@ -200,6 +200,7 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+.cursor
 
 # Project artifacts
 configs/local/
@@ -209,3 +210,11 @@ runs/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+#MLflow
+mlruns/
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
+
+mynotes/

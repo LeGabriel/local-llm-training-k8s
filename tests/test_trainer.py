@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from unittest.mock import Mock
 
 import pytest
 
@@ -298,3 +299,44 @@ def test_eval_logging_emits_at_expected_steps(
     assert "val_step=4/5" in eval_logs[1]
     assert "val_step=5/5" in eval_logs[2]
     assert "val/loss=" in eval_logs[0]
+
+
+def test_trainer_logs_params_and_metrics_to_injected_tracker() -> None:
+    payload = {
+        "schema_version": 1,
+        "run": {"name": "tracker-di-test"},
+        "model": {"name": "dummy_gpt"},
+        "data": {"name": "dummy_text"},
+        "trainer": {
+            "max_steps": 5,
+            "log_every_steps": 2,
+            "eval_every_steps": 2,
+            "warmup_steps": 0,
+            "micro_batch_size": 1,
+            "grad_accum_steps": 1,
+        },
+        "ddp": {},
+        "mlflow": {},
+        "logging": {"log_to_file": False},
+        "output": {"root_dir": "runs"},
+    }
+    cfg = RunConfig.model_validate(payload)
+    tracker = Mock()
+    trainer = Trainer(cfg, tracker=tracker)
+
+    trainer.fit()
+
+    tracker.log_params.assert_called_once_with(cfg.model_dump())
+    train_metric_steps: set[int] = set()
+    has_val_metrics = False
+    for call in tracker.log_metrics.call_args_list:
+        payload = call.args[0]
+        step = call.kwargs.get("step")
+        if "train/loss" in payload and "train/lr" in payload:
+            assert step is not None
+            train_metric_steps.add(step)
+        if "val/loss" in payload:
+            has_val_metrics = True
+
+    assert train_metric_steps == {2, 4, 5}
+    assert has_val_metrics
