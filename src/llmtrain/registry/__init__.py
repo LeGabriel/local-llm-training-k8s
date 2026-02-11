@@ -8,7 +8,10 @@ MODEL_REGISTRY_MODULES: tuple[str, ...] = (
     "llmtrain.models.dummy_gpt",
     "llmtrain.models.gpt",
 )
-DATA_REGISTRY_MODULES: tuple[str, ...] = ("llmtrain.data.dummy_text",)
+DATA_REGISTRY_MODULES: tuple[str, ...] = (
+    "llmtrain.data.dummy_text",
+    "llmtrain.data.hf_text",
+)
 
 
 def initialize_registries() -> None:
