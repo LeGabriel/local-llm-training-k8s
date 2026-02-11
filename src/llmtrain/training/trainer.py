@@ -35,6 +35,8 @@ class TrainResult:
     val_metrics: dict[str, float] | None = None
     first_step_loss: float | None = None
     resumed_from_step: int | None = None
+    parameter_count: int | None = None
+    trainable_parameter_count: int | None = None
 
 
 def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -226,6 +228,10 @@ class Trainer:
                     max_steps,
                 )
         self._tracker.log_params(self._cfg.model_dump())
+        parameter_count = sum(param.numel() for param in self._model.parameters())
+        trainable_parameter_count = sum(
+            param.numel() for param in self._model.parameters() if param.requires_grad
+        )
 
         start_time = time.perf_counter()
         if resume_step > 0:
@@ -348,4 +354,6 @@ class Trainer:
             val_metrics=final_val_metrics,
             first_step_loss=first_step_loss,
             resumed_from_step=resumed_from_step,
+            parameter_count=parameter_count,
+            trainable_parameter_count=trainable_parameter_count,
         )

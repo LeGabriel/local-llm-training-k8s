@@ -56,6 +56,22 @@ def _minimal_config(root_dir: Path) -> dict[str, object]:
     }
 
 
+def _minimal_gpt_config(root_dir: Path) -> dict[str, object]:
+    payload = _minimal_config(root_dir)
+    payload["model"] = {
+        "name": "gpt",
+        "block_size": 8,
+        "d_model": 64,
+        "n_layers": 2,
+        "n_heads": 2,
+        "d_ff": 128,
+        "dropout": 0.0,
+        "tie_embeddings": True,
+        "vocab_size": 16,
+    }
+    return payload
+
+
 def test_validate_command_success(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path, _minimal_config(tmp_path / "runs"))
 
@@ -200,6 +216,9 @@ def test_train_full_run_emits_training_summary(tmp_path: Path) -> None:
     assert training["first_step_loss"] is not None
     assert math.isfinite(training["first_step_loss"])
     assert math.isfinite(training["final_loss"])
+    assert training["parameter_count"] > 0
+    assert training["trainable_parameter_count"] > 0
+    assert training["parameter_count"] >= training["trainable_parameter_count"]
     assert "val_metrics" in training
     assert math.isfinite(training["val_metrics"]["val/loss"])
 
@@ -237,8 +256,56 @@ def test_train_full_run_text_output(tmp_path: Path) -> None:
     assert "Training:" in result.stdout
     assert "final_step=" in result.stdout
     assert "final_loss=" in result.stdout
+    assert "parameter_count=" in result.stdout
+    assert "trainable_parameter_count=" in result.stdout
     assert "Validation:" in result.stdout
     assert "val/loss=" in result.stdout
+
+
+def test_train_full_run_gpt_end_to_end_20_steps(tmp_path: Path) -> None:
+    """Explicit GPT end-to-end integration: CLI train completes 20 optimizer steps."""
+    root_dir = tmp_path / "runs"
+    config_payload = _minimal_gpt_config(root_dir)
+    config_payload["trainer"] = {
+        "max_steps": 20,
+        "warmup_steps": 0,
+        "log_every_steps": 10,
+        "eval_every_steps": 10,
+        "micro_batch_size": 2,
+        "grad_accum_steps": 1,
+        "lr": 3e-3,
+    }
+    config_path = _write_config(tmp_path / "gpt20", config_payload)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "llmtrain",
+            "train",
+            "--config",
+            str(config_path),
+            "--run-id",
+            "gpt-e2e-20",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    summary = json.loads(result.stdout)
+    assert summary["run_id"] == "gpt-e2e-20"
+    assert "training" in summary
+    training = summary["training"]
+    assert training["final_step"] == 20
+    assert training["first_step_loss"] is not None
+    assert math.isfinite(training["first_step_loss"])
+    assert math.isfinite(training["final_loss"])
+    assert training["parameter_count"] > 0
+    assert training["trainable_parameter_count"] > 0
+    assert "val_metrics" in training
+    assert math.isfinite(training["val_metrics"]["val/loss"])
 
 
 # ---------------------------------------------------------------------------
