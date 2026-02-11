@@ -81,6 +81,9 @@ namespace_packages = true
 addopts = "-ra"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "slow: marks tests that use real datasets, downloads, or multi-process runs",
+]
 
 [tool.coverage.run]
 branch = true
