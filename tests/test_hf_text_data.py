@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 import torch
+from torch.utils.data.distributed import DistributedSampler
 
 from llmtrain.config.schemas import RunConfig
 from llmtrain.data.hf_text import HFTextDataModule
@@ -15,7 +16,9 @@ from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import get_data_module
 
 
-def _config(cache_dir: Path) -> RunConfig:
+def _config(
+    cache_dir: Path, *, ddp_world_size: int | None = None, ddp_rank: int | None = None
+) -> RunConfig:
     payload = {
         "schema_version": 1,
         "run": {"name": "hf-text-data-test"},
@@ -23,6 +26,7 @@ def _config(cache_dir: Path) -> RunConfig:
         "data": {
             "name": "hf_text",
             "cache_dir": str(cache_dir),
+            "num_workers": 0,
             "dataset_name": "wikitext",
             "dataset_config": "wikitext-2-raw-v1",
             "train_split": "train",
@@ -35,7 +39,10 @@ def _config(cache_dir: Path) -> RunConfig:
             "grad_accum_steps": 1,
             "warmup_steps": 0,
         },
-        "ddp": {},
+        "ddp": {
+            "world_size": ddp_world_size,
+            "rank": ddp_rank,
+        },
         "mlflow": {},
         "logging": {"log_to_file": False},
         "output": {"root_dir": "runs"},
@@ -175,3 +182,93 @@ def test_hf_text_setup_reuses_cached_processed_splits(
     cached_data.setup(cfg, tokenizer=tokenizer)
     assert cached_data._train_dataset is not None
     assert len(cached_data._train_dataset) == first_train_len
+
+
+def test_hf_text_dataloaders_return_expected_batch_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datasets import Dataset  # type: ignore[import-untyped]
+
+    cfg = _config(tmp_path / "hf_cache")
+    tokenizer = _ToyTokenizer()
+    data = HFTextDataModule()
+
+    dataset = Dataset.from_dict(
+        {
+            "text": [
+                "alpha beta gamma delta epsilon zeta eta theta iota kappa",
+                "lambda mu nu xi omicron pi rho sigma tau upsilon",
+                "phi chi psi omega alpha beta gamma delta epsilon zeta",
+            ]
+        }
+    )
+
+    def _fake_load_dataset(*args: object, **kwargs: object) -> Dataset:
+        del args, kwargs
+        return dataset
+
+    monkeypatch.setattr("datasets.load_dataset", _fake_load_dataset)
+    data.setup(cfg, tokenizer=tokenizer)
+
+    train_loader = data.train_dataloader()
+    val_loader = data.val_dataloader()
+    assert val_loader is not None
+
+    train_batch = next(iter(train_loader))
+    val_batch = next(iter(val_loader))
+
+    assert set(train_batch.keys()) == {"input_ids", "labels", "attention_mask"}
+    assert train_batch["input_ids"].shape == (cfg.trainer.micro_batch_size, cfg.model.block_size)
+    assert train_batch["labels"].shape == (cfg.trainer.micro_batch_size, cfg.model.block_size)
+    assert train_batch["attention_mask"].shape == (
+        cfg.trainer.micro_batch_size,
+        cfg.model.block_size,
+    )
+    assert train_batch["input_ids"].dtype == torch.long
+    assert train_batch["labels"].dtype == torch.long
+    assert train_batch["attention_mask"].dtype == torch.long
+
+    assert val_batch["input_ids"].shape == (cfg.trainer.micro_batch_size, cfg.model.block_size)
+    assert val_batch["labels"].shape == (cfg.trainer.micro_batch_size, cfg.model.block_size)
+    assert val_batch["attention_mask"].shape == (cfg.trainer.micro_batch_size, cfg.model.block_size)
+
+
+def test_hf_text_dataloaders_use_ddp_sampler_from_config_hints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datasets import Dataset  # type: ignore[import-untyped]
+
+    cfg = _config(tmp_path / "hf_cache", ddp_world_size=4, ddp_rank=2)
+    tokenizer = _ToyTokenizer()
+    data = HFTextDataModule()
+
+    dataset = Dataset.from_dict(
+        {
+            "text": [
+                "alpha beta gamma delta epsilon zeta eta theta iota kappa",
+                "lambda mu nu xi omicron pi rho sigma tau upsilon",
+                "phi chi psi omega alpha beta gamma delta epsilon zeta",
+                "eta theta iota kappa lambda mu nu xi omicron pi",
+            ]
+        }
+    )
+
+    def _fake_load_dataset(*args: object, **kwargs: object) -> Dataset:
+        del args, kwargs
+        return dataset
+
+    monkeypatch.setattr("datasets.load_dataset", _fake_load_dataset)
+    monkeypatch.setattr("llmtrain.data.hf_text.dist.is_available", lambda: True)
+    monkeypatch.setattr("llmtrain.data.hf_text.dist.is_initialized", lambda: False)
+
+    data.setup(cfg, tokenizer=tokenizer)
+    train_loader = data.train_dataloader()
+    val_loader = data.val_dataloader()
+    assert val_loader is not None
+
+    assert isinstance(train_loader.sampler, DistributedSampler)
+    assert isinstance(val_loader.sampler, DistributedSampler)
+    assert train_loader.sampler.num_replicas == 4
+    assert train_loader.sampler.rank == 2
+    assert val_loader.sampler.num_replicas == 4
+    assert val_loader.sampler.rank == 2

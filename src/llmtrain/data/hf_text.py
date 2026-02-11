@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import torch
+import torch.distributed as dist
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from llmtrain.config.schemas import RunConfig
 from llmtrain.data.base import DataModule
@@ -18,6 +21,17 @@ class HFTextDataModule(DataModule):
         self._cfg: RunConfig | None = None
         self._train_dataset: Any | None = None
         self._val_dataset: Any | None = None
+
+    @staticmethod
+    def _collate_batch(batch: list[dict[str, list[int]]]) -> dict[str, torch.Tensor]:
+        return {
+            "input_ids": torch.tensor([row["input_ids"] for row in batch], dtype=torch.long),
+            "labels": torch.tensor([row["labels"] for row in batch], dtype=torch.long),
+            "attention_mask": torch.tensor(
+                [row["attention_mask"] for row in batch],
+                dtype=torch.long,
+            ),
+        }
 
     def setup(self, cfg: RunConfig, tokenizer: Any | None = None) -> None:
         if cfg.data.dataset_name is None:
@@ -134,7 +148,67 @@ class HFTextDataModule(DataModule):
         )
 
     def train_dataloader(self) -> DataLoader:
-        raise RuntimeError("HFTextDataModule dataloaders are not implemented yet.")
+        if self._cfg is None or self._train_dataset is None:
+            raise RuntimeError("setup must be called before train_dataloader")
+        micro_batch_size = self._cfg.trainer.micro_batch_size or 1
+        num_workers = self._cfg.data.num_workers
+        use_ddp = False
+        world_size = self._cfg.ddp.world_size or 1
+        rank = self._cfg.ddp.rank or 0
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+            use_ddp = world_size > 1
+        elif world_size > 1:
+            use_ddp = True
+        sampler: DistributedSampler | None = None
+        if use_ddp:
+            sampler = DistributedSampler(
+                self._train_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=not self._cfg.run.deterministic,
+                seed=self._cfg.run.seed,
+            )
+        return DataLoader(
+            self._train_dataset,
+            batch_size=micro_batch_size,
+            num_workers=num_workers,
+            shuffle=sampler is None and not self._cfg.run.deterministic,
+            sampler=sampler,
+            collate_fn=self._collate_batch,
+        )
 
     def val_dataloader(self) -> DataLoader | None:
-        raise RuntimeError("HFTextDataModule dataloaders are not implemented yet.")
+        if self._cfg is None:
+            raise RuntimeError("setup must be called before val_dataloader")
+        if self._val_dataset is None:
+            return None
+        micro_batch_size = self._cfg.trainer.micro_batch_size or 1
+        num_workers = self._cfg.data.num_workers
+        use_ddp = False
+        world_size = self._cfg.ddp.world_size or 1
+        rank = self._cfg.ddp.rank or 0
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+            use_ddp = world_size > 1
+        elif world_size > 1:
+            use_ddp = True
+        sampler: DistributedSampler | None = None
+        if use_ddp:
+            sampler = DistributedSampler(
+                self._val_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=False,
+                seed=self._cfg.run.seed,
+            )
+        return DataLoader(
+            self._val_dataset,
+            batch_size=micro_batch_size,
+            num_workers=num_workers,
+            shuffle=False,
+            sampler=sampler,
+            collate_fn=self._collate_batch,
+        )
