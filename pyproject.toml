@@ -23,6 +23,8 @@ dependencies = [
     "pyyaml>=6.0,<7.0.0",
     "torch>=2.1.0",
     "numpy>=1.26,<2.0",
+    "datasets",
+    "tiktoken",
 ]
 
 [project.optional-dependencies]

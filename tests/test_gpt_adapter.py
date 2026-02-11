@@ -10,7 +10,7 @@ from llmtrain.config.schemas import RunConfig
 from llmtrain.models.gpt import GPT, GPTAdapter
 
 
-def _gpt_config() -> RunConfig:
+def _gpt_config(*, vocab_size: int | None = 32) -> RunConfig:
     payload = {
         "schema_version": 1,
         "run": {"name": "gpt-adapter-test"},
@@ -23,7 +23,7 @@ def _gpt_config() -> RunConfig:
             "d_ff": 128,
             "dropout": 0.0,
             "tie_embeddings": True,
-            "vocab_size": 32,
+            "vocab_size": vocab_size,
         },
         "data": {"name": "dummy_text"},
         "trainer": {
@@ -118,3 +118,29 @@ def test_gpt_adapter_hyperparams_from_config() -> None:
     assert model.token_embedding.num_embeddings == cfg.model.vocab_size
     assert model.token_embedding.embedding_dim == cfg.model.d_model
     assert model.position_embedding.num_embeddings == cfg.model.block_size
+
+
+def test_gpt_adapter_build_tokenizer_roundtrip() -> None:
+    cfg = _gpt_config()
+    adapter = GPTAdapter()
+    tokenizer = adapter.build_tokenizer(cfg)
+    assert tokenizer is not None
+
+    text = "hello world"
+    token_ids = tokenizer.encode(text)
+
+    assert isinstance(token_ids, list)
+    assert len(token_ids) > 0
+    assert tokenizer.decode(token_ids) == text
+
+
+def test_gpt_adapter_uses_tokenizer_vocab_size_when_unset() -> None:
+    cfg = _gpt_config(vocab_size=None)
+    adapter = GPTAdapter()
+
+    tokenizer = adapter.build_tokenizer(cfg)
+    assert tokenizer is not None
+    model = adapter.build_model(cfg)
+
+    assert isinstance(model, GPT)
+    assert model.token_embedding.num_embeddings == tokenizer.n_vocab
