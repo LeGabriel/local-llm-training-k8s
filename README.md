@@ -6,7 +6,9 @@ Production-style distributed training framework for decoder-only transformers, t
 - Keep it modular: `ModelAdapter`, `DataModule`, and `Trainer` are contract-based.
 - Reach "one command" local K8s training with checkpoints, metrics, and reproducible runs.
 
-## What exists today (v0.6)
+## What exists today (v0.8)
+- Real decoder-only GPT model adapter (`gpt`) with causal self-attention.
+- Fast smoke-path model adapter (`dummy_gpt`) remains available.
 - Real single-process training loop with gradient accumulation and LR schedule.
 - Checkpointing every `save_every_steps` with resume via `--resume`.
 - Periodic evaluation with `val/*` metrics and `final_val_loss` summary fields.
@@ -14,15 +16,12 @@ Production-style distributed training framework for decoder-only transformers, t
 - Deterministic run directories with config + metadata snapshots.
 
 ## High-level roadmap
-- **v0.6**: evaluation loop and validation metrics.
-- **v0.7**: MLflow experiment tracking (optional dependency).
-- **v0.8**: real GPT decoder model (causal attention).
 - **v0.9**: real data pipeline (HuggingFace datasets + tokenizer).
 - **v1.0**: Distributed Data Parallel on a single machine.
 - **v1.1**: Kubernetes `kind` + IndexedJob orchestration.
 - **v1.2**: production hardening (signals, CI, docs polish).
 
-## Quickstart (v0.6 config-driven CLI)
+## Quickstart (v0.8 config-driven CLI)
 1) Install deps (uses `uv`):
    ```bash
    uv sync
@@ -69,6 +68,21 @@ Production-style distributed training framework for decoder-only transformers, t
    ```bash
    python -m llmtrain train --config configs/presets/example.yaml --resume runs/<run_id>/checkpoints/step_20.pt
    ```
+
+### GPT smoke preset (v0.8)
+
+Use the v0.8 GPT decoder preset for a fast end-to-end smoke run:
+
+```bash
+python -m llmtrain train --config configs/presets/gpt_smoke.yaml
+```
+
+To inspect or validate the same preset before training:
+
+```bash
+python -m llmtrain print-config --config configs/presets/gpt_smoke.yaml
+python -m llmtrain validate --config configs/presets/gpt_smoke.yaml
+```
 
 Notes:
 - `--dry-run` runs a forward-only sanity check (no optimization).
