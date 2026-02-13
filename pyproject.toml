@@ -23,6 +23,8 @@ dependencies = [
     "pyyaml>=6.0,<7.0.0",
     "torch>=2.1.0",
     "numpy>=1.26,<2.0",
+    "datasets",
+    "tiktoken",
 ]
 
 [project.optional-dependencies]
@@ -79,6 +81,9 @@ namespace_packages = true
 addopts = "-ra"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "slow: marks tests that use real datasets, downloads, or multi-process runs",
+]
 
 [tool.coverage.run]
 branch = true

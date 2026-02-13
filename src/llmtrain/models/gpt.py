@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any, cast
 
+import tiktoken
 import torch
 from torch import nn
 
@@ -188,7 +189,13 @@ class GPTAdapter(ModelAdapter):
     """Model adapter for the decoder-only GPT implementation."""
 
     def build_model(self, cfg: RunConfig) -> nn.Module:
-        vocab_size = cfg.model.vocab_size or 128
+        vocab_size = cfg.model.vocab_size
+        if vocab_size is None:
+            tokenizer = self.build_tokenizer(cfg)
+            tokenizer_vocab_size = getattr(tokenizer, "n_vocab", None)
+            if not isinstance(tokenizer_vocab_size, int) or tokenizer_vocab_size <= 0:
+                raise ValueError("GPT tokenizer must expose a positive integer n_vocab.")
+            vocab_size = tokenizer_vocab_size
         return GPT(
             vocab_size=vocab_size,
             block_size=cfg.model.block_size,
@@ -201,7 +208,8 @@ class GPTAdapter(ModelAdapter):
         )
 
     def build_tokenizer(self, cfg: RunConfig) -> Any | None:
-        return None
+        del cfg
+        return tiktoken.get_encoding("gpt2")
 
     def compute_loss(
         self, model: nn.Module, batch: dict[str, torch.Tensor]
