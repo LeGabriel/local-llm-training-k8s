@@ -44,7 +44,7 @@ class HFTextDataModule(DataModule):
         if not hasattr(tokenizer, "encode"):
             raise ValueError("hf_text tokenizer must provide an encode(text) method.")
 
-        from datasets import Dataset, load_dataset, load_from_disk  # type: ignore[import-untyped]
+        from datasets import load_dataset, load_from_disk  # type: ignore[import-untyped]
 
         self._cfg = cfg
         self._train_dataset = self._prepare_split(
@@ -54,7 +54,6 @@ class HFTextDataModule(DataModule):
             text_column=text_column,
             load_dataset=load_dataset,
             load_from_disk=load_from_disk,
-            dataset_cls=Dataset,
         )
         self._val_dataset = self._prepare_split(
             split=cfg.data.val_split,
@@ -63,7 +62,6 @@ class HFTextDataModule(DataModule):
             text_column=text_column,
             load_dataset=load_dataset,
             load_from_disk=load_from_disk,
-            dataset_cls=Dataset,
         )
 
     def _prepare_split(
@@ -75,7 +73,6 @@ class HFTextDataModule(DataModule):
         text_column: str,
         load_dataset: Any,
         load_from_disk: Any,
-        dataset_cls: Any,
     ) -> Any:
         cache_path = self._processed_cache_path(cfg, split)
         if cache_path.exists():
@@ -92,7 +89,6 @@ class HFTextDataModule(DataModule):
             tokenizer=tokenizer,
             text_column=text_column,
             block_size=cfg.model.block_size,
-            dataset_cls=dataset_cls,
         )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         processed_dataset.save_to_disk(str(cache_path))
@@ -116,35 +112,65 @@ class HFTextDataModule(DataModule):
         tokenizer: Any,
         text_column: str,
         block_size: int,
-        dataset_cls: Any,
     ) -> Any:
-        chunk_size = block_size + 1
-        buffer: list[int] = []
-        input_ids: list[list[int]] = []
-        labels: list[list[int]] = []
-        attention_mask: list[list[int]] = []
+        """Map-based tokenize -> concatenate -> chunk pipeline.
 
-        for row in raw_dataset:
-            text_value = row.get(text_column)
-            if text_value is None:
-                continue
-            encoded = tokenizer.encode(str(text_value))
-            if not isinstance(encoded, list):
-                raise ValueError("Tokenizer encode output must be a list of token ids.")
-            buffer.extend(int(token_id) for token_id in encoded)
-            while len(buffer) >= chunk_size:
-                chunk = buffer[:chunk_size]
-                del buffer[:chunk_size]
+        1. ``raw_dataset.map(_tokenize_fn, batched=True)`` encodes every row's
+           text column into a list of token ids.
+        2. ``tokenized.map(_group_and_chunk, batched=True)`` concatenates
+           token-id lists within each batch, then slices the result into
+           fixed-length ``(block_size + 1)`` windows that yield ``input_ids``
+           and right-shifted ``labels``.
+        """
+        chunk_size = block_size + 1
+
+        def _tokenize_fn(
+            examples: dict[str, list[Any]],
+        ) -> dict[str, list[list[int]]]:
+            all_ids: list[list[int]] = []
+            for text in examples[text_column]:
+                if text is None:
+                    all_ids.append([])
+                    continue
+                encoded = tokenizer.encode(str(text))
+                if not isinstance(encoded, list):
+                    raise ValueError("Tokenizer encode output must be a list of token ids.")
+                all_ids.append([int(token_id) for token_id in encoded])
+            return {"token_ids": all_ids}
+
+        tokenized = raw_dataset.map(
+            _tokenize_fn,
+            batched=True,
+            remove_columns=raw_dataset.column_names,
+            desc="Tokenizing",
+        )
+
+        def _group_and_chunk(
+            examples: dict[str, list[list[int]]],
+        ) -> dict[str, list[list[int]]]:
+            concatenated: list[int] = []
+            for ids in examples["token_ids"]:
+                concatenated.extend(ids)
+            total = (len(concatenated) // chunk_size) * chunk_size
+            input_ids: list[list[int]] = []
+            labels: list[list[int]] = []
+            attention_mask: list[list[int]] = []
+            for i in range(0, total, chunk_size):
+                chunk = concatenated[i : i + chunk_size]
                 input_ids.append(chunk[:-1])
                 labels.append(chunk[1:])
                 attention_mask.append([1] * block_size)
-
-        return dataset_cls.from_dict(
-            {
+            return {
                 "input_ids": input_ids,
                 "labels": labels,
                 "attention_mask": attention_mask,
             }
+
+        return tokenized.map(
+            _group_and_chunk,
+            batched=True,
+            remove_columns=["token_ids"],
+            desc="Chunking",
         )
 
     def train_dataloader(self) -> DataLoader:
