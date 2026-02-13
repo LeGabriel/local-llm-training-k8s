@@ -1,7 +1,8 @@
-"""Single-process training loop: optimizer steps, gradient accumulation, LR schedule."""
+"""Training loop: optimizer steps, gradient accumulation, LR schedule, optional DDP."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import random
@@ -12,8 +13,10 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch.nn.parallel import DistributedDataParallel
 
 from llmtrain.config.schemas import RunConfig
+from llmtrain.distributed import DDPState
 from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import get_data_module
 from llmtrain.registry.models import get_model_adapter
@@ -50,7 +53,7 @@ def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 
 
 class Trainer:
-    """Single-process trainer: one device, step-based loop with gradient accumulation."""
+    """Trainer: one device, step-based loop with gradient accumulation and optional DDP."""
 
     def __init__(
         self,
@@ -58,9 +61,11 @@ class Trainer:
         *,
         run_dir: Path | None = None,
         tracker: Tracker | None = None,
+        ddp_state: DDPState | None = None,
     ) -> None:
         self._cfg = cfg
         self._tracker: Tracker = tracker or NullTracker()
+        self._ddp_state = ddp_state
         initialize_registries()
 
         adapter_cls = get_model_adapter(cfg.model.name)
@@ -68,7 +73,7 @@ class Trainer:
         self._adapter = adapter_cls()
         data_module = data_cls()
 
-        self._model = self._adapter.build_model(cfg)
+        self._model: torch.nn.Module = self._adapter.build_model(cfg)
         tokenizer = self._adapter.build_tokenizer(cfg)
         data_module.setup(cfg, tokenizer=tokenizer)
         self._train_loader = data_module.train_dataloader()
@@ -76,6 +81,13 @@ class Trainer:
 
         self._device = torch.device("cpu")
         self._model = self._model.to(self._device)
+
+        # Wrap with DistributedDataParallel when DDP is active with >1 process.
+        if ddp_state is not None and ddp_state.world_size > 1:
+            self._model = DistributedDataParallel(
+                self._model,
+                find_unused_parameters=cfg.ddp.find_unused_parameters,
+            )
 
         self._optimizer = torch.optim.AdamW(
             self._model.parameters(),
@@ -112,13 +124,20 @@ class Trainer:
         """Scheduler instance (for tests that assert LR curve)."""
         return self._scheduler
 
+    @property
+    def _raw_model(self) -> torch.nn.Module:
+        """Return the unwrapped model (strips DDP wrapper if present)."""
+        if isinstance(self._model, DistributedDataParallel):
+            return self._model.module
+        return self._model
+
     def restore(self, payload: CheckpointPayload) -> int:
         """Restore model, optimizer, scheduler, and RNG states from a checkpoint payload.
 
         Returns the step number stored in the checkpoint (i.e. the step to
         resume *from*).
         """
-        self._model.load_state_dict(payload["model_state_dict"])
+        self._raw_model.load_state_dict(payload["model_state_dict"])
         self._optimizer.load_state_dict(payload["optimizer_state_dict"])
         self._scheduler.load_state_dict(payload["scheduler_state_dict"])
 
@@ -175,7 +194,7 @@ class Trainer:
         with torch.no_grad():
             for batch in self._val_loader:
                 batch = _move_batch(batch, self._device)
-                loss, metrics = self._adapter.compute_loss(self._model, batch)
+                loss, metrics = self._adapter.compute_loss(self._raw_model, batch)
                 batch_metrics = dict(metrics)
                 batch_metrics.setdefault("loss", float(loss.item()))
                 for key, value in batch_metrics.items():
@@ -228,13 +247,18 @@ class Trainer:
                     max_steps,
                 )
         self._tracker.log_params(self._cfg.model_dump())
-        parameter_count = sum(param.numel() for param in self._model.parameters())
+        parameter_count = sum(param.numel() for param in self._raw_model.parameters())
         trainable_parameter_count = sum(
-            param.numel() for param in self._model.parameters() if param.requires_grad
+            param.numel() for param in self._raw_model.parameters() if param.requires_grad
         )
 
         start_time = time.perf_counter()
-        if resume_step > 0:
+        # Skip batches to approximate the same data order on resume.
+        # This is only safe in single-process mode; under DDP each rank's
+        # DistributedSampler produces a different shard, so naively
+        # skipping batches would desynchronise the ranks.
+        _is_ddp = self._ddp_state is not None and self._ddp_state.world_size > 1
+        if resume_step > 0 and not _is_ddp:
             batches_to_skip = resume_step * grad_accum_steps
             for _ in range(batches_to_skip):
                 try:
@@ -258,7 +282,7 @@ class Trainer:
             accumulated_loss = 0.0
             step_tokens = 0
 
-            for _ in range(grad_accum_steps):
+            for micro_step in range(grad_accum_steps):
                 try:
                     batch = next(iterator)
                 except StopIteration:
@@ -267,9 +291,19 @@ class Trainer:
 
                 batch = _move_batch(batch, self._device)
                 step_tokens += batch["input_ids"].numel()
-                loss, metrics = self._adapter.compute_loss(self._model, batch)
-                scaled = loss / grad_accum_steps
-                scaled.backward()
+
+                # Skip all-reduce on non-final micro-batches when DDP is active.
+                is_last_micro = micro_step == grad_accum_steps - 1
+                sync_ctx: contextlib.AbstractContextManager[None] = (
+                    self._model.no_sync()
+                    if not is_last_micro and isinstance(self._model, DistributedDataParallel)
+                    else contextlib.nullcontext()
+                )
+
+                with sync_ctx:
+                    loss, metrics = self._adapter.compute_loss(self._model, batch)
+                    scaled = loss / grad_accum_steps
+                    scaled.backward()
                 accumulated_loss += float(metrics.get("loss", loss.item()))
 
             torch.nn.utils.clip_grad_norm_(
@@ -286,7 +320,7 @@ class Trainer:
             if self._ckpt_mgr is not None and (step % save_every == 0 or step == max_steps):
                 self._ckpt_mgr.save(
                     step,
-                    self._model,
+                    self._raw_model,
                     self._optimizer,
                     self._scheduler,
                     self._cfg,

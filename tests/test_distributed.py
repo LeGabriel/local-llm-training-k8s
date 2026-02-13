@@ -7,10 +7,13 @@ import socket
 from collections.abc import Iterator
 
 import pytest
+import torch
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 
 from llmtrain.config.schemas import RunConfig
 from llmtrain.distributed import DDPState, setup_ddp, teardown_ddp
+from llmtrain.training.trainer import Trainer
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -42,8 +45,8 @@ def _minimal_run_config(**ddp_overrides: object) -> RunConfig:
         {
             "schema_version": 1,
             "run": {"name": "test-ddp"},
-            "model": {"name": "dummy"},
-            "data": {"name": "dummy"},
+            "model": {"name": "dummy_gpt"},
+            "data": {"name": "dummy_text"},
             "trainer": {},
             "ddp": {**{"enabled": True, "backend": "gloo"}, **ddp_overrides},
             "mlflow": {"enabled": False},
@@ -215,3 +218,90 @@ class TestConfigFallback:
 
         with pytest.raises(RuntimeError, match="must be an integer"):
             setup_ddp(cfg)
+
+
+# ---------------------------------------------------------------------------
+# DDP model wrapping tests (Trainer integration, 1.0.2)
+# ---------------------------------------------------------------------------
+
+
+class TestDDPModelWrapping:
+    """Verify Trainer wraps the model with DistributedDataParallel when
+    ddp_state indicates world_size > 1, and that _raw_model unwraps it."""
+
+    def test_model_wrapped_when_world_size_gt_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When ddp_state.world_size > 1, the model must be wrapped in DDP
+        and model.module must be accessible."""
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        # Create a DDPState with world_size=2 so the Trainer triggers wrapping,
+        # even though the actual process group has world_size=1.
+        ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
+        trainer = Trainer(cfg, ddp_state=ddp_state)
+
+        assert isinstance(trainer._model, DistributedDataParallel)
+        assert hasattr(trainer._model, "module")
+
+    def test_model_not_wrapped_when_no_ddp_state(self) -> None:
+        """Without ddp_state the model must remain a plain nn.Module
+        (not wrapped in DDP)."""
+        cfg = _minimal_run_config()
+        trainer = Trainer(cfg, ddp_state=None)
+
+        assert not isinstance(trainer._model, DistributedDataParallel)
+
+    def test_model_not_wrapped_when_world_size_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With world_size=1 the model must not be wrapped (no point in DDP
+        with a single process)."""
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        ddp_state = DDPState(rank=0, world_size=1, local_rank=0, is_main=True)
+        trainer = Trainer(cfg, ddp_state=ddp_state)
+
+        assert not isinstance(trainer._model, DistributedDataParallel)
+
+    def test_raw_model_returns_unwrapped_when_ddp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_raw_model must return the inner module when the model is wrapped
+        in DistributedDataParallel."""
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
+        trainer = Trainer(cfg, ddp_state=ddp_state)
+
+        raw = trainer._raw_model
+        assert not isinstance(raw, DistributedDataParallel)
+        assert isinstance(raw, torch.nn.Module)
+        # The raw model must be the same object as the DDP wrapper's .module
+        assert raw is trainer._model.module
+
+    def test_raw_model_returns_model_when_no_ddp(self) -> None:
+        """_raw_model must return self._model directly when DDP is not used."""
+        cfg = _minimal_run_config()
+        trainer = Trainer(cfg, ddp_state=None)
+
+        raw = trainer._raw_model
+        assert raw is trainer._model
