@@ -6,9 +6,11 @@ Production-style distributed training framework for decoder-only transformers, t
 - Keep it modular: `ModelAdapter`, `DataModule`, and `Trainer` are contract-based.
 - Reach "one command" local K8s training with checkpoints, metrics, and reproducible runs.
 
-## What exists today (v0.8)
+## What exists today (v0.9)
 - Real decoder-only GPT model adapter (`gpt`) with causal self-attention.
 - Fast smoke-path model adapter (`dummy_gpt`) remains available.
+- GPT tokenizer wiring via `tiktoken` (`gpt2` encoding).
+- Real text data pipeline via Hugging Face datasets (`hf_text`).
 - Real single-process training loop with gradient accumulation and LR schedule.
 - Checkpointing every `save_every_steps` with resume via `--resume`.
 - Periodic evaluation with `val/*` metrics and `final_val_loss` summary fields.
@@ -21,7 +23,7 @@ Production-style distributed training framework for decoder-only transformers, t
 - **v1.1**: Kubernetes `kind` + IndexedJob orchestration.
 - **v1.2**: production hardening (signals, CI, docs polish).
 
-## Quickstart (v0.8 config-driven CLI)
+## Quickstart (v0.9 config-driven CLI)
 1) Install deps (uses `uv`):
    ```bash
    uv sync
@@ -31,7 +33,10 @@ Production-style distributed training framework for decoder-only transformers, t
    uv sync --extra dev
    pre-commit install
    ```
-3) Optional MLflow dependency (for v0.7+ tracking):
+3) Real-data dependencies:
+   - `datasets` and `tiktoken` are core dependencies and are installed by default with `uv sync`.
+   - `gpt_wikitext` works without any additional install extra.
+4) Optional MLflow dependency (for v0.7+ tracking):
    ```bash
    uv sync --extra mlflow
    ```
@@ -39,32 +44,32 @@ Production-style distributed training framework for decoder-only transformers, t
    ```bash
    pip install -e '.[mlflow]'
    ```
-4) Run lint & tests (optional but recommended):
+5) Run lint & tests (optional but recommended):
    ```bash
    make lint
    make test
    ```
-5) CLI help:
+6) CLI help:
    ```bash
    python -m llmtrain --help
    ```
-6) Validate a config:
+7) Validate a config:
    ```bash
    python -m llmtrain validate --config configs/presets/example.yaml
    ```
-7) Inspect the resolved config (defaults materialized):
+8) Inspect the resolved config (defaults materialized):
    ```bash
    python -m llmtrain print-config --config configs/presets/example.yaml
    ```
-8) Train (creates `runs/<run_id>/` with config + metadata + checkpoints):
+9) Train (creates `runs/<run_id>/` with config + metadata + checkpoints):
    ```bash
    python -m llmtrain train --config configs/presets/example.yaml
    ```
-9) Resume from the latest checkpoint in a run:
+10) Resume from the latest checkpoint in a run:
    ```bash
    python -m llmtrain train --config configs/presets/example.yaml --resume <run_id>
    ```
-10) Resume from a specific checkpoint file:
+11) Resume from a specific checkpoint file:
    ```bash
    python -m llmtrain train --config configs/presets/example.yaml --resume runs/<run_id>/checkpoints/step_20.pt
    ```
@@ -87,6 +92,35 @@ python -m llmtrain validate --config configs/presets/gpt_smoke.yaml
 Notes:
 - `--dry-run` runs a forward-only sanity check (no optimization).
 - Use `--json` on any command for machine-readable output.
+
+### GPT + WikiText preset (v0.9 real-data)
+
+Use the v0.9 real-data preset to run GPT training on Hugging Face WikiText:
+
+```bash
+python -m llmtrain train --config configs/presets/gpt_wikitext.yaml
+```
+
+Inspect or validate before launching:
+
+```bash
+python -m llmtrain print-config --config configs/presets/gpt_wikitext.yaml
+python -m llmtrain validate --config configs/presets/gpt_wikitext.yaml
+```
+
+Real-data behavior:
+- `data.name: hf_text` loads `wikitext/wikitext-2-raw-v1` and reads from `data.text_column`.
+- Tokenization uses the GPT tokenizer (`tiktoken` `gpt2` encoding), then builds next-token training windows.
+- Processed/downloaded dataset artifacts are cached under `data.cache_dir` (preset default: `.cache/datasets`).
+- The first run may take longer because dataset files are downloaded and processed.
+
+Slow integration test coverage:
+- `tests/test_hf_text_integration.py` includes `@pytest.mark.slow` real-data CLI training.
+- Run only slow tests with:
+  ```bash
+  pytest -m slow
+  ```
+- This test asserts finite losses and a lower final train loss versus first-step loss.
 
 ## MLflow tracking (v0.7)
 
@@ -144,7 +178,8 @@ When running `train`, a run directory is created under `output.root_dir`:
 - `src/llmtrain/`: package code
   - `cli.py` / `__main__.py`: CLI entrypoint
   - `training/`: single-process trainer + checkpointing
-  - `models/`, `data/`: dummy adapters for fast CPU smoke tests
+  - `models/`: GPT + dummy model adapters
+  - `data/`: HF real-text + dummy data modules
   - `config/`, `registry/`, `utils/`: contracts and runtime plumbing
 - `tests/`: pytest suite (includes CLI smoke)
 - `pyproject.toml`: project + tool config (ruff, mypy, pytest)
