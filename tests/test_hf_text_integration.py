@@ -31,9 +31,6 @@ def _write_config(path: Path, payload: dict[str, Any]) -> Path:
 
 @pytest.mark.slow
 def test_train_gpt_wikitext_real_data_finite_and_improving_loss(tmp_path: Path) -> None:
-    pytest.importorskip("datasets")
-    pytest.importorskip("tiktoken")
-
     root_dir = _repo_root()
     preset_path = root_dir / "configs" / "presets" / "gpt_wikitext.yaml"
     payload = _load_preset(preset_path)
