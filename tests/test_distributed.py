@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import socket
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
 import torch
 import torch.distributed as dist
+import yaml
 from torch.nn.parallel import DistributedDataParallel
 
 from llmtrain.config.schemas import RunConfig
@@ -411,3 +417,111 @@ class TestRank0OnlyIO:
         ckpt_dir = run_dir / "checkpoints"
         assert ckpt_dir.exists()
         assert len(list(ckpt_dir.glob("step_*.pt"))) > 0
+
+
+# ---------------------------------------------------------------------------
+# Slow multi-process integration test (1.0.5)
+# ---------------------------------------------------------------------------
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _load_preset(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        payload = yaml.safe_load(f)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected mapping payload in preset {path}")
+    return cast(dict[str, Any], payload)
+
+
+def _write_config(path: Path, payload: dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
+class TestDDPMultiProcessIntegration:
+    """Slow integration tests that spawn real multi-process torchrun runs."""
+
+    @pytest.mark.slow
+    def test_ddp_two_process_torchrun(self, tmp_path: Path) -> None:
+        """Spawn a 2-process DDP run via ``torchrun`` and verify correctness.
+
+        Asserts:
+        - Process exits with code 0.
+        - JSON summary ``training.final_step`` matches ``max_steps``.
+        - ``training.final_loss`` is finite.
+        - ``training.parameter_count > 0``.
+        - Only one set of checkpoint files exists (rank-0-only saving).
+        """
+        root_dir = _repo_root()
+        preset_path = root_dir / "configs" / "presets" / "ddp_smoke.yaml"
+        payload = _load_preset(preset_path)
+
+        max_steps = int(payload["trainer"]["max_steps"])
+        save_every = int(payload["trainer"]["save_every_steps"])
+
+        # Redirect output into the temp directory.
+        payload["output"] = {
+            "root_dir": str(tmp_path / "runs"),
+            "save_config_copy": True,
+            "save_meta_json": True,
+        }
+
+        config_path = _write_config(tmp_path / "ddp_smoke_test.yaml", payload)
+        run_id = "ddp-integration-test"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "torch.distributed.run",
+                "--nproc_per_node=2",
+                "-m",
+                "llmtrain",
+                "train",
+                "--config",
+                str(config_path),
+                "--run-id",
+                run_id,
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+
+        assert result.returncode == 0, (
+            f"torchrun exited with code {result.returncode}\n"
+            f"--- stderr ---\n{result.stderr}\n"
+            f"--- stdout ---\n{result.stdout}"
+        )
+
+        # Rank 0 emits exactly one JSON summary on stdout.
+        summary = json.loads(result.stdout)
+        training = summary["training"]
+
+        assert training["final_step"] == max_steps
+        assert math.isfinite(training["final_loss"])
+        assert training["parameter_count"] > 0
+
+        # Only rank 0 saves checkpoints — verify a single set of files.
+        run_dir = tmp_path / "runs" / run_id
+        ckpt_dir = run_dir / "checkpoints"
+        ckpt_files = sorted(ckpt_dir.glob("step_*.pt"))
+
+        expected_ckpts = max_steps // save_every
+        assert len(ckpt_files) == expected_ckpts, (
+            f"Expected {expected_ckpts} checkpoint(s), found {len(ckpt_files)}: "
+            f"{[f.name for f in ckpt_files]}"
+        )
+
+        # Confirm rank-0-only: no second run directory or duplicate checkpoints.
+        all_run_dirs = list((tmp_path / "runs").iterdir())
+        assert len(all_run_dirs) == 1, (
+            f"Expected exactly 1 run directory, found {len(all_run_dirs)}: "
+            f"{[d.name for d in all_run_dirs]}"
+        )

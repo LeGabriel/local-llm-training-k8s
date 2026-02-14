@@ -371,12 +371,11 @@ class Trainer:
                 interval_tokens = 0
                 interval_start = time.perf_counter()
 
-            if step % eval_every == 0 or step == max_steps:
+            if (step % eval_every == 0 or step == max_steps) and self._is_main:
                 eval_metrics = self._evaluate()
                 if eval_metrics:
                     final_val_metrics = eval_metrics
-                    if self._is_main:
-                        self._tracker.log_metrics(eval_metrics, step=step)
+                    self._tracker.log_metrics(eval_metrics, step=step)
                     metrics_parts = "  ".join(
                         f"{key}={value:.4f}" for key, value in sorted(eval_metrics.items())
                     )
