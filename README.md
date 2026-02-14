@@ -19,6 +19,10 @@ Production-style distributed training framework for decoder-only transformers, t
 - Deterministic run directories with config + metadata snapshots.
 
 ## High-level roadmap
+- **v0.5**: checkpointing & resume.
+- **v0.6**: evaluation loop and validation metrics.
+- **v0.7**: MLflow experiment tracking (optional dependency).
+- **v0.8**: real GPT decoder model (causal attention).
 - **v0.9**: real data pipeline (HuggingFace datasets + tokenizer).
 - **v1.0**: Distributed Data Parallel on a single machine. **(current)**
 - **v1.1**: Kubernetes `kind` + IndexedJob orchestration.
