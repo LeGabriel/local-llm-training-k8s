@@ -1,4 +1,5 @@
-.PHONY: format lint test train-ddp train-gpt-ddp mlflow
+.PHONY: format lint test train-ddp train-gpt-ddp mlflow \
+       k8s-cluster k8s-cluster-delete
 
 format:
 	uv run ruff format src tests
@@ -18,3 +19,13 @@ train-gpt-ddp:
 
 mlflow:
 	uv run mlflow ui --backend-store-uri sqlite:///./mlflow.db
+
+# ---------------------------------------------------------------------------
+# Kubernetes (kind) targets
+# ---------------------------------------------------------------------------
+
+k8s-cluster:
+	kind create cluster --name llmtrain --config k8s/kind-config.yaml
+
+k8s-cluster-delete:
+	kind delete cluster --name llmtrain
