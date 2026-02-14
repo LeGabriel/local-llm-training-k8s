@@ -1,4 +1,4 @@
-.PHONY: format lint test
+.PHONY: format lint test train-ddp
 
 format:
 	uv run ruff format src tests
@@ -9,3 +9,6 @@ lint:
 
 test:
 	uv run pytest
+
+train-ddp:
+	uv run torchrun --nproc_per_node=2 -m llmtrain train --config configs/presets/ddp_smoke.yaml

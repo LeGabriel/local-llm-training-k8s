@@ -13,7 +13,7 @@ import yaml
 from llmtrain import __version__
 from llmtrain.config.loader import ConfigLoadError, load_and_validate_config
 from llmtrain.config.schemas import LoggingConfig, RunConfig
-from llmtrain.distributed import DDPState
+from llmtrain.distributed import DDPState, setup_ddp, teardown_ddp
 from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import RegistryError as DataRegistryError
 from llmtrain.registry.data import get_data_module
@@ -205,8 +205,10 @@ def _handle_train(args: argparse.Namespace) -> int:
         _emit_config_error(exc, json_output=args.json)
         return 2
 
-    # DDP state — populated by setup_ddp() when DDP is enabled (step 1.0.4).
+    # DDP state — populated by setup_ddp() when DDP is enabled.
     ddp_state: DDPState | None = None
+    if config.ddp.enabled:
+        ddp_state = setup_ddp(config)
     is_main = ddp_state is None or ddp_state.is_main
 
     root_dir = config.output.root_dir
@@ -292,6 +294,7 @@ def _handle_train(args: argparse.Namespace) -> int:
                     config,
                     run_dir=run_dir if is_main else None,
                     tracker=tracker,
+                    ddp_state=ddp_state,
                 )
                 train_result = trainer.fit(resume_from=resume_from)
             except Exception as exc:
@@ -317,6 +320,8 @@ def _handle_train(args: argparse.Namespace) -> int:
                 print(summary)
     finally:
         tracker.end_run()
+        if ddp_state is not None:
+            teardown_ddp()
 
     return 0
 
