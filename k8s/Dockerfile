@@ -18,5 +18,9 @@ COPY src/ src/
 # Install the package with the MLflow extra (available for optional tracking).
 RUN pip install --no-cache-dir '.[mlflow]'
 
+# Copy the K8s entrypoint script (DDP env var bootstrap for IndexedJob).
+COPY k8s/entrypoint.sh /app/k8s/entrypoint.sh
+RUN chmod +x /app/k8s/entrypoint.sh
+
 ENTRYPOINT ["python", "-m", "llmtrain"]
 CMD ["--help"]
