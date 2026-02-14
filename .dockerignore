@@ -1,0 +1,50 @@
+# Version control
+.git/
+.gitignore
+
+# Python artifacts
+__pycache__/
+*.py[codz]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+.env
+
+# Test / lint / type-checking caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.uv-cache/
+htmlcov/
+.coverage
+
+# IDE / editor
+.cursor/
+.vscode/
+.idea/
+
+# Project runtime artifacts
+runs/
+mlruns/
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
+*.log
+
+# Dev-only files
+tests/
+notebooks/
+mynotes/
+configs/local/
+.pre-commit-config.yaml
+uv.lock
+.python-version
+.DS_Store
+
+# Documentation / planning (README.md is kept — needed by pyproject.toml)
+roadmap_advanced.md
+Distributed Transformer Training on Local Kubernetes (Milestone 1).md
+LICENSE
