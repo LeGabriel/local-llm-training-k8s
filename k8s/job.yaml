@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: llmtrain
+spec:
+  completionMode: Indexed
+  completions: 2
+  parallelism: 2
+  template:
+    metadata:
+      labels:
+        app: llmtrain
+    spec:
+      serviceAccountName: llmtrain-sa
+      restartPolicy: Never
+      containers:
+        - name: trainer
+          image: llmtrain:dev
+          command: ["/bin/bash", "/app/k8s/entrypoint.sh"]
+          env:
+            - name: WORLD_SIZE
+              value: "2"
+            - name: MASTER_PORT
+              value: "29500"
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: JOB_NAME
+              value: "llmtrain"
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: llmtrain-config

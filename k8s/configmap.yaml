@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llmtrain-config
+data:
+  train.yaml: |
+    schema_version: 1
+    run:
+      name: "k8s-ddp-smoke"
+      seed: 123
+      device: "cpu"
+      deterministic: true
+      notes: "K8s IndexedJob DDP smoke test — 2 pods, 10 steps, gloo backend."
+    model:
+      name: "dummy_gpt"
+      init: "random"
+      block_size: 32
+      d_model: 64
+      n_layers: 2
+      n_heads: 2
+      d_ff: 128
+      dropout: 0.0
+      tie_embeddings: true
+      vocab_size: 256
+    data:
+      name: "dummy_text"
+      cache_dir: ".cache/datasets"
+      num_workers: 0
+      train_split: "train"
+      val_split: "validation"
+      dataset_name: "wikitext"
+      dataset_config: "wikitext-2-raw-v1"
+      text_column: "text"
+    trainer:
+      max_steps: 10
+      micro_batch_size: 2
+      grad_accum_steps: 2
+      lr: 0.0003
+      weight_decay: 0.0
+      warmup_steps: 2
+      max_grad_norm: 1.0
+      log_every_steps: 5
+      eval_every_steps: 5
+      save_every_steps: 10
+    ddp:
+      enabled: true
+      backend: "gloo"
+      init_method: "env://"
+      timeout_sec: 1800
+      find_unused_parameters: false
+      rank: null
+      world_size: null
+      local_rank: null
+      master_addr: null
+      master_port: null
+    mlflow:
+      enabled: false
+      tracking_uri: "file:./mlruns"
+      experiment: "llm-train-k8s"
+      run_name: null
+      log_models: false
+    logging:
+      level: "INFO"
+      json_output: true
+      log_to_file: false
+      file_name: "train.log"
+    output:
+      root_dir: "/app/runs"
+      run_id: null
+      save_config_copy: true
+      save_meta_json: true

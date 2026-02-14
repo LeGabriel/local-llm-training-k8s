@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: llmtrain-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: llmtrain-pod-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: llmtrain-pod-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: llmtrain-sa
+roleRef:
+  kind: Role
+  name: llmtrain-pod-reader
+  apiGroup: rbac.authorization.k8s.io
