@@ -112,10 +112,15 @@ def test_trainer_evaluate_returns_finite_metrics() -> None:
     cfg = _minimal_config()
     trainer = Trainer(cfg)
 
-    metrics = trainer._evaluate()
-    assert metrics is not None
-    assert metrics
-    assert all(math.isfinite(value) for value in metrics.values())
+    result = trainer._evaluate()
+    assert result is not None
+    local_metrics, global_metrics = result
+    assert local_metrics
+    assert global_metrics
+    assert all(math.isfinite(v) for v in local_metrics.values())
+    assert all(math.isfinite(v) for v in global_metrics.values())
+    # Without DDP, local and global metrics should be equal.
+    assert local_metrics == global_metrics
 
 
 def _scheduler_config(

@@ -325,8 +325,9 @@ class TestRank0OnlyIO:
     ``ddp_state.is_main``."""
 
     def test_tracker_not_called_on_non_main_rank(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When ``ddp_state.is_main`` is False, ``tracker.log_params`` and
-        ``tracker.log_metrics`` must never be called during ``fit()``."""
+        """When ``ddp_state.is_main`` is False, ``tracker.log_params`` must
+        not be called, and only rank-suffixed metrics are logged (no global
+        keys like ``train/loss`` or ``val/loss``)."""
         port = _free_port()
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")
@@ -343,7 +344,12 @@ class TestRank0OnlyIO:
         trainer.fit(max_steps_override=2)
 
         tracker.log_params.assert_not_called()
-        tracker.log_metrics.assert_not_called()
+        # Non-main ranks now log per-rank metrics but must NOT log global keys.
+        tracker.log_metrics.assert_called()
+        for call in tracker.log_metrics.call_args_list:
+            metrics_dict = call[0][0]
+            for key in metrics_dict:
+                assert "_rank_" in key, f"Non-main rank logged global metric key: {key}"
 
     def test_tracker_called_on_main_rank(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When ``ddp_state.is_main`` is True, ``tracker.log_params`` and
@@ -440,6 +446,141 @@ def _write_config(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return path
+
+
+# ---------------------------------------------------------------------------
+# Metric key naming tests (per-rank vs global)
+# ---------------------------------------------------------------------------
+
+
+class TestMetricKeyNaming:
+    """Verify that metric keys use rank suffixes only under multi-process DDP
+    and that non-DDP runs produce plain (unsuffixed) keys."""
+
+    def test_no_rank_suffix_without_ddp(self) -> None:
+        """Without DDP, metric keys must NOT contain rank suffixes."""
+        cfg = _minimal_run_config()
+        tracker = Mock()
+        trainer = Trainer(cfg, tracker=tracker, ddp_state=None)
+        trainer.fit(max_steps_override=2)
+
+        for call in tracker.log_metrics.call_args_list:
+            metrics_dict = call[0][0]
+            for key in metrics_dict:
+                assert "_rank_" not in key, f"Non-DDP run logged rank-suffixed key: {key}"
+
+    def test_rank_suffix_and_global_keys_under_ddp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Under DDP (rank 0), both rank-suffixed and global keys must appear."""
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        tracker = Mock()
+        ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
+        trainer = Trainer(cfg, tracker=tracker, ddp_state=ddp_state)
+        trainer.fit(max_steps_override=2)
+
+        all_keys: set[str] = set()
+        for call in tracker.log_metrics.call_args_list:
+            metrics_dict = call[0][0]
+            all_keys.update(metrics_dict.keys())
+
+        rank_keys = {k for k in all_keys if "_rank_0" in k}
+        global_keys = {k for k in all_keys if "_rank_" not in k}
+
+        assert rank_keys, f"Expected rank-suffixed keys, got: {all_keys}"
+        assert global_keys, f"Expected global keys, got: {all_keys}"
+        # Verify specific expected keys are present.
+        assert "train/loss_rank_0" in rank_keys
+        assert "train/loss" in global_keys
+
+    def test_non_main_only_logs_rank_suffixed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-main rank must only log rank-suffixed metrics, never global."""
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        tracker = Mock()
+        ddp_state = DDPState(rank=1, world_size=2, local_rank=1, is_main=False)
+        trainer = Trainer(cfg, tracker=tracker, ddp_state=ddp_state)
+        trainer.fit(max_steps_override=2)
+
+        tracker.log_params.assert_not_called()
+        for call in tracker.log_metrics.call_args_list:
+            metrics_dict = call[0][0]
+            for key in metrics_dict:
+                assert "_rank_1" in key, f"Non-main rank logged global metric key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# _reduce_metrics helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestReduceMetrics:
+    """Verify the _reduce_metrics helper returns local values when DDP is
+    not active."""
+
+    def test_returns_local_when_no_ddp(self) -> None:
+        """Without any DDP state, _reduce_metrics must return local values."""
+        cfg = _minimal_run_config()
+        trainer = Trainer(cfg, ddp_state=None)
+
+        result = trainer._reduce_metrics(a=1.0, b=2.5, c=3.0)
+
+        assert result == {"a": 1.0, "b": 2.5, "c": 3.0}
+
+    def test_returns_local_when_world_size_1(self) -> None:
+        """With world_size=1, _reduce_metrics must return local values
+        unchanged (DDP is not active)."""
+        cfg = _minimal_run_config()
+        ddp_state = DDPState(rank=0, world_size=1, local_rank=0, is_main=True)
+        trainer = Trainer(cfg, ddp_state=ddp_state)
+
+        result = trainer._reduce_metrics(loss_sum=10.0, steps=5.0)
+
+        assert result == {"loss_sum": 10.0, "steps": 5.0}
+
+    def test_reduce_with_single_process_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With a single-process group and DDPState.world_size > 1 the
+        all_reduce path is exercised but the result equals the input
+        (only one process contributing)."""
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
+        trainer = Trainer(cfg, ddp_state=ddp_state)
+
+        result = trainer._reduce_metrics(loss_sum=4.0, steps=2.0, tokens=100.0)
+
+        # Single-process all_reduce SUM == identity.
+        assert result["loss_sum"] == pytest.approx(4.0)
+        assert result["steps"] == pytest.approx(2.0)
+        assert result["tokens"] == pytest.approx(100.0)
+
+
+# ---------------------------------------------------------------------------
+# Slow multi-process integration test (1.0.5)
+# ---------------------------------------------------------------------------
 
 
 class TestDDPMultiProcessIntegration:
