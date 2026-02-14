@@ -13,6 +13,7 @@ import yaml
 from llmtrain import __version__
 from llmtrain.config.loader import ConfigLoadError, load_and_validate_config
 from llmtrain.config.schemas import LoggingConfig, RunConfig
+from llmtrain.distributed import DDPState, setup_ddp, teardown_ddp
 from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import RegistryError as DataRegistryError
 from llmtrain.registry.data import get_data_module
@@ -204,26 +205,35 @@ def _handle_train(args: argparse.Namespace) -> int:
         _emit_config_error(exc, json_output=args.json)
         return 2
 
+    # DDP state — populated by setup_ddp() when DDP is enabled.
+    ddp_state: DDPState | None = None
+    if config.ddp.enabled:
+        ddp_state = setup_ddp(config)
+    is_main = ddp_state is None or ddp_state.is_main
+
     root_dir = config.output.root_dir
     run_id = args.run_id or config.output.run_id or generate_run_id(config.run.name, root_dir)
-    run_dir = create_run_directory(root_dir, run_id)
+
+    run_dir = create_run_directory(root_dir, run_id) if is_main else Path(root_dir) / run_id
+
     logger = _configure_logger(
         config.logging,
         verbose=args.verbose,
-        log_dir=run_dir / "logs",
+        log_dir=run_dir / "logs" if is_main else None,
         stream=sys.stderr if args.json else None,
     )
 
-    if config.output.save_config_copy:
-        write_resolved_config(run_dir, config)
-    if config.output.save_meta_json:
-        meta = generate_meta(
-            run_id=run_id,
-            run_name=config.run.name,
-            config_path=raw_path,
-            resolved_config_path=str(resolved_path),
-        )
-        write_meta_json(run_dir, meta)
+    if is_main:
+        if config.output.save_config_copy:
+            write_resolved_config(run_dir, config)
+        if config.output.save_meta_json:
+            meta = generate_meta(
+                run_id=run_id,
+                run_name=config.run.name,
+                config_path=raw_path,
+                resolved_config_path=str(resolved_path),
+            )
+            write_meta_json(run_dir, meta)
 
     initialize_registries()
     try:
@@ -233,9 +243,32 @@ def _handle_train(args: argparse.Namespace) -> int:
         _emit_config_error(ConfigLoadError(str(exc)), json_output=args.json)
         return 2
 
-    tracker = _create_tracker(config, logger)
+    # Every rank needs a real tracker so per-rank metrics are recorded.
+    # Rank 0 creates the MLflow run; other ranks join it via the run_id.
+    _ddp_active = ddp_state is not None and ddp_state.world_size > 1
+    tracker: Tracker = _create_tracker(config, logger)
     try:
-        tracker.start_run(run_name=config.mlflow.run_name or run_id)
+        if _ddp_active:
+            import torch.distributed as dist
+
+            obj_list: list[str | None] = [None]
+            if is_main:
+                tracker.start_run(run_name=config.mlflow.run_name or run_id)
+                # Broadcast the MLflow run-id so workers join the same run.
+                obj_list[0] = (
+                    tracker.active_run_id  # type: ignore[attr-defined]
+                    if hasattr(tracker, "active_run_id")
+                    else None
+                )
+            dist.broadcast_object_list(obj_list, src=0)
+            if not is_main:
+                mlflow_run_id = obj_list[0]
+                if mlflow_run_id is not None:
+                    tracker.start_run(run_id=mlflow_run_id)
+                else:
+                    tracker.start_run(run_name=config.mlflow.run_name or run_id)
+        else:
+            tracker.start_run(run_name=config.mlflow.run_name or run_id)
 
         if args.dry_run:
             # --- Dry-run path (forward-only sanity check) ---
@@ -280,7 +313,12 @@ def _handle_train(args: argparse.Namespace) -> int:
                 logger.info("Resuming from: %s", resume_from)
 
             try:
-                trainer = Trainer(config, run_dir=run_dir, tracker=tracker)
+                trainer = Trainer(
+                    config,
+                    run_dir=run_dir if is_main else None,
+                    tracker=tracker,
+                    ddp_state=ddp_state,
+                )
                 train_result = trainer.fit(resume_from=resume_from)
             except Exception as exc:
                 print(f"Training failed: {exc}", file=sys.stderr)
@@ -295,14 +333,18 @@ def _handle_train(args: argparse.Namespace) -> int:
                 resumed_from=resume_from,
             )
 
-        _log_run_artifacts(tracker, run_dir)
+        if is_main:
+            _log_run_artifacts(tracker, run_dir)
 
-        if args.json:
-            print(json.dumps(summary, indent=2))
-        else:
-            print(summary)
+        if is_main:
+            if args.json:
+                print(json.dumps(summary, indent=2))
+            else:
+                print(summary)
     finally:
         tracker.end_run()
+        if ddp_state is not None:
+            teardown_ddp()
 
     return 0
 

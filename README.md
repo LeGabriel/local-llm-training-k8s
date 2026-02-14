@@ -6,20 +6,25 @@ Production-style distributed training framework for decoder-only transformers, t
 - Keep it modular: `ModelAdapter`, `DataModule`, and `Trainer` are contract-based.
 - Reach "one command" local K8s training with checkpoints, metrics, and reproducible runs.
 
-## What exists today (v0.9)
+## What exists today (v1.0)
 - Real decoder-only GPT model adapter (`gpt`) with causal self-attention.
 - Fast smoke-path model adapter (`dummy_gpt`) remains available.
 - GPT tokenizer wiring via `tiktoken` (`gpt2` encoding).
 - Real text data pipeline via Hugging Face datasets (`hf_text`).
 - Real single-process training loop with gradient accumulation and LR schedule.
+- **Distributed Data Parallel (DDP)** multi-process training via `torchrun`.
 - Checkpointing every `save_every_steps` with resume via `--resume`.
 - Periodic evaluation with `val/*` metrics and `final_val_loss` summary fields.
 - Config-driven CLI with strict validation and JSON output support.
 - Deterministic run directories with config + metadata snapshots.
 
 ## High-level roadmap
+- **v0.5**: checkpointing & resume.
+- **v0.6**: evaluation loop and validation metrics.
+- **v0.7**: MLflow experiment tracking (optional dependency).
+- **v0.8**: real GPT decoder model (causal attention).
 - **v0.9**: real data pipeline (HuggingFace datasets + tokenizer).
-- **v1.0**: Distributed Data Parallel on a single machine.
+- **v1.0**: Distributed Data Parallel on a single machine. **(current)**
 - **v1.1**: Kubernetes `kind` + IndexedJob orchestration.
 - **v1.2**: production hardening (signals, CI, docs polish).
 
@@ -141,6 +146,58 @@ mlflow ui --backend-store-uri sqlite:///./mlflow.db
 You should see the run with logged params, metrics (`train/loss`, `train/lr`,
 `val/loss`), and artifacts (`config.yaml`, `meta.json`).
 
+## Distributed Training — DDP (v1.0)
+
+v1.0 adds single-machine, multi-process Distributed Data Parallel (DDP) training
+via PyTorch's `torchrun` launcher. Each process gets its own copy of the model;
+gradients are synchronized automatically across processes after each accumulation
+window.
+
+### Quick start
+
+Run a 2-process DDP smoke test with the provided Makefile target:
+
+```bash
+make train-ddp
+```
+
+This is equivalent to:
+
+```bash
+torchrun --nproc_per_node=2 -m llmtrain train --config configs/presets/ddp_smoke.yaml
+```
+
+### How it works
+
+1. Set `ddp.enabled: true` in your config YAML (see `configs/presets/ddp_smoke.yaml`
+   for a minimal example).
+2. Launch with `torchrun` (or `python -m torch.distributed.run`). `torchrun` sets
+   the `RANK`, `WORLD_SIZE`, `LOCAL_RANK`, `MASTER_ADDR`, and `MASTER_PORT`
+   environment variables automatically.
+3. The CLI calls `setup_ddp()` which initializes the process group and returns a
+   `DDPState`. The model is wrapped in `DistributedDataParallel` and gradient
+   synchronization is deferred until the final micro-batch of each accumulation
+   window via `model.no_sync()`.
+4. Only rank 0 writes checkpoints, config copies, metadata, MLflow logs, and the
+   JSON summary. All ranks log to stdout for debugging visibility.
+5. On exit, `teardown_ddp()` destroys the process group.
+
+### Limitations
+
+- **gloo backend only (CPU)**: The current implementation uses the `gloo` backend
+  for CPU-based training. GPU/NCCL support is not yet wired.
+- **Single machine**: `torchrun --nproc_per_node=N` launches N processes on one
+  host. Multi-node DDP is planned for v1.1 (Kubernetes).
+
+### Slow integration test
+
+The DDP integration test spawns a real 2-process `torchrun` run and is marked
+`@pytest.mark.slow`:
+
+```bash
+pytest -m slow -k test_ddp_two_process_torchrun
+```
+
 ## Config structure (v0.5)
 Configs are YAML files validated by Pydantic with strict fields. Example presets live in `configs/presets/`.
 
@@ -178,6 +235,7 @@ When running `train`, a run directory is created under `output.root_dir`:
 - `src/llmtrain/`: package code
   - `cli.py` / `__main__.py`: CLI entrypoint
   - `training/`: single-process trainer + checkpointing
+  - `distributed/`: DDP setup/teardown utilities and `DDPState`
   - `models/`: GPT + dummy model adapters
   - `data/`: HF real-text + dummy data modules
   - `config/`, `registry/`, `utils/`: contracts and runtime plumbing

@@ -10,8 +10,8 @@ from typing import Any, Protocol
 class Tracker(Protocol):
     """Tracker contract for experiment logging."""
 
-    def start_run(self, run_name: str | None = None) -> None:
-        """Start a new tracking run."""
+    def start_run(self, run_name: str | None = None, *, run_id: str | None = None) -> None:
+        """Start a new tracking run, or join an existing one via *run_id*."""
 
     def log_params(self, params: Mapping[str, Any]) -> None:
         """Log training configuration parameters."""
@@ -29,8 +29,9 @@ class Tracker(Protocol):
 class NullTracker:
     """No-op tracker used when tracking is disabled or unavailable."""
 
-    def start_run(self, run_name: str | None = None) -> None:
+    def start_run(self, run_name: str | None = None, *, run_id: str | None = None) -> None:
         _ = run_name
+        _ = run_id
 
     def log_params(self, params: Mapping[str, Any]) -> None:
         _ = params

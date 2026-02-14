@@ -563,6 +563,7 @@ def test_handle_train_wires_tracker_lifecycle_and_artifacts(
         config,
         run_dir=tmp_path / "runs" / "cli-wiring-run",
         tracker=tracker,
+        ddp_state=None,
     )
 
 
@@ -620,6 +621,7 @@ def test_handle_train_always_ends_tracker_when_training_fails(
         config,
         run_dir=tmp_path / "runs" / "cli-failing-run",
         tracker=tracker,
+        ddp_state=None,
     )
 
 

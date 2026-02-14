@@ -51,10 +51,20 @@ class MLflowTracker:
             ) from exc
         self._mlflow = mlflow
 
-    def start_run(self, run_name: str | None = None) -> None:
+    def start_run(self, run_name: str | None = None, *, run_id: str | None = None) -> None:
         self._mlflow.set_tracking_uri(self._tracking_uri)
         self._mlflow.set_experiment(self._experiment)
-        self._mlflow.start_run(run_name=run_name or self._run_name)
+        if run_id is not None:
+            # Join an existing run (used by non-rank-0 DDP workers).
+            self._mlflow.start_run(run_id=run_id)
+        else:
+            self._mlflow.start_run(run_name=run_name or self._run_name)
+
+    @property
+    def active_run_id(self) -> str | None:
+        """Return the run-id of the currently active MLflow run, if any."""
+        run = self._mlflow.active_run()
+        return run.info.run_id if run is not None else None
 
     def log_params(self, params: Mapping[str, Any]) -> None:
         flattened = _flatten_params(params)
