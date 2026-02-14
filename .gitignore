@@ -218,3 +218,4 @@ mlflow.db-shm
 mlflow.db-wal
 
 mynotes/
+.DS_Store

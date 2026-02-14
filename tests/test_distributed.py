@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import socket
 from collections.abc import Iterator
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -305,3 +307,107 @@ class TestDDPModelWrapping:
 
         raw = trainer._raw_model
         assert raw is trainer._model
+
+
+# ---------------------------------------------------------------------------
+# Rank-0-only I/O tests (1.0.3)
+# ---------------------------------------------------------------------------
+
+
+class TestRank0OnlyIO:
+    """Verify that tracker calls and checkpoint saves are gated behind
+    ``ddp_state.is_main``."""
+
+    def test_tracker_not_called_on_non_main_rank(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When ``ddp_state.is_main`` is False, ``tracker.log_params`` and
+        ``tracker.log_metrics`` must never be called during ``fit()``."""
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        tracker = Mock()
+        ddp_state = DDPState(rank=1, world_size=2, local_rank=1, is_main=False)
+        trainer = Trainer(cfg, tracker=tracker, ddp_state=ddp_state)
+        trainer.fit(max_steps_override=2)
+
+        tracker.log_params.assert_not_called()
+        tracker.log_metrics.assert_not_called()
+
+    def test_tracker_called_on_main_rank(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When ``ddp_state.is_main`` is True, ``tracker.log_params`` and
+        ``tracker.log_metrics`` must be called during ``fit()``."""
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        tracker = Mock()
+        ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
+        trainer = Trainer(cfg, tracker=tracker, ddp_state=ddp_state)
+        trainer.fit(max_steps_override=2)
+
+        tracker.log_params.assert_called_once()
+        tracker.log_metrics.assert_called()
+
+    def test_checkpoint_not_saved_on_non_main_rank(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """When ``ddp_state.is_main`` is False, no checkpoint files must be
+        written even when a ``run_dir`` is provided."""
+        run_dir = tmp_path / "non_main_ckpt"
+        run_dir.mkdir(parents=True)
+
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        ddp_state = DDPState(rank=1, world_size=2, local_rank=1, is_main=False)
+        trainer = Trainer(cfg, run_dir=run_dir, ddp_state=ddp_state)
+        trainer.fit(max_steps_override=2)
+
+        ckpt_dir = run_dir / "checkpoints"
+        # The CheckpointManager creates the directory but should write no files.
+        if ckpt_dir.exists():
+            assert list(ckpt_dir.glob("step_*.pt")) == []
+
+    def test_checkpoint_saved_on_main_rank(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """When ``ddp_state.is_main`` is True, checkpoint files must be written."""
+        run_dir = tmp_path / "main_ckpt"
+        run_dir.mkdir(parents=True)
+
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
+        trainer = Trainer(cfg, run_dir=run_dir, ddp_state=ddp_state)
+        trainer.fit(max_steps_override=2)
+
+        ckpt_dir = run_dir / "checkpoints"
+        assert ckpt_dir.exists()
+        assert len(list(ckpt_dir.glob("step_*.pt"))) > 0

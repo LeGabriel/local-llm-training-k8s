@@ -13,6 +13,7 @@ import yaml
 from llmtrain import __version__
 from llmtrain.config.loader import ConfigLoadError, load_and_validate_config
 from llmtrain.config.schemas import LoggingConfig, RunConfig
+from llmtrain.distributed import DDPState
 from llmtrain.registry import initialize_registries
 from llmtrain.registry.data import RegistryError as DataRegistryError
 from llmtrain.registry.data import get_data_module
@@ -204,26 +205,33 @@ def _handle_train(args: argparse.Namespace) -> int:
         _emit_config_error(exc, json_output=args.json)
         return 2
 
+    # DDP state — populated by setup_ddp() when DDP is enabled (step 1.0.4).
+    ddp_state: DDPState | None = None
+    is_main = ddp_state is None or ddp_state.is_main
+
     root_dir = config.output.root_dir
     run_id = args.run_id or config.output.run_id or generate_run_id(config.run.name, root_dir)
-    run_dir = create_run_directory(root_dir, run_id)
+
+    run_dir = create_run_directory(root_dir, run_id) if is_main else Path(root_dir) / run_id
+
     logger = _configure_logger(
         config.logging,
         verbose=args.verbose,
-        log_dir=run_dir / "logs",
+        log_dir=run_dir / "logs" if is_main else None,
         stream=sys.stderr if args.json else None,
     )
 
-    if config.output.save_config_copy:
-        write_resolved_config(run_dir, config)
-    if config.output.save_meta_json:
-        meta = generate_meta(
-            run_id=run_id,
-            run_name=config.run.name,
-            config_path=raw_path,
-            resolved_config_path=str(resolved_path),
-        )
-        write_meta_json(run_dir, meta)
+    if is_main:
+        if config.output.save_config_copy:
+            write_resolved_config(run_dir, config)
+        if config.output.save_meta_json:
+            meta = generate_meta(
+                run_id=run_id,
+                run_name=config.run.name,
+                config_path=raw_path,
+                resolved_config_path=str(resolved_path),
+            )
+            write_meta_json(run_dir, meta)
 
     initialize_registries()
     try:
@@ -233,7 +241,7 @@ def _handle_train(args: argparse.Namespace) -> int:
         _emit_config_error(ConfigLoadError(str(exc)), json_output=args.json)
         return 2
 
-    tracker = _create_tracker(config, logger)
+    tracker: Tracker = _create_tracker(config, logger) if is_main else NullTracker()
     try:
         tracker.start_run(run_name=config.mlflow.run_name or run_id)
 
@@ -280,7 +288,11 @@ def _handle_train(args: argparse.Namespace) -> int:
                 logger.info("Resuming from: %s", resume_from)
 
             try:
-                trainer = Trainer(config, run_dir=run_dir, tracker=tracker)
+                trainer = Trainer(
+                    config,
+                    run_dir=run_dir if is_main else None,
+                    tracker=tracker,
+                )
                 train_result = trainer.fit(resume_from=resume_from)
             except Exception as exc:
                 print(f"Training failed: {exc}", file=sys.stderr)
@@ -295,12 +307,14 @@ def _handle_train(args: argparse.Namespace) -> int:
                 resumed_from=resume_from,
             )
 
-        _log_run_artifacts(tracker, run_dir)
+        if is_main:
+            _log_run_artifacts(tracker, run_dir)
 
-        if args.json:
-            print(json.dumps(summary, indent=2))
-        else:
-            print(summary)
+        if is_main:
+            if args.json:
+                print(json.dumps(summary, indent=2))
+            else:
+                print(summary)
     finally:
         tracker.end_run()
 

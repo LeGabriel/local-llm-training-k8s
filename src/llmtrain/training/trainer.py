@@ -125,6 +125,11 @@ class Trainer:
         return self._scheduler
 
     @property
+    def _is_main(self) -> bool:
+        """Whether this process is the main rank (or DDP is not active)."""
+        return self._ddp_state is None or self._ddp_state.is_main
+
+    @property
     def _raw_model(self) -> torch.nn.Module:
         """Return the unwrapped model (strips DDP wrapper if present)."""
         if isinstance(self._model, DistributedDataParallel):
@@ -246,7 +251,8 @@ class Trainer:
                     resume_step,
                     max_steps,
                 )
-        self._tracker.log_params(self._cfg.model_dump())
+        if self._is_main:
+            self._tracker.log_params(self._cfg.model_dump())
         parameter_count = sum(param.numel() for param in self._raw_model.parameters())
         trainable_parameter_count = sum(
             param.numel() for param in self._raw_model.parameters() if param.requires_grad
@@ -317,7 +323,11 @@ class Trainer:
             if step == 1:
                 first_step_loss = step_loss
 
-            if self._ckpt_mgr is not None and (step % save_every == 0 or step == max_steps):
+            if (
+                self._ckpt_mgr is not None
+                and (step % save_every == 0 or step == max_steps)
+                and self._is_main
+            ):
                 self._ckpt_mgr.save(
                     step,
                     self._raw_model,
@@ -338,13 +348,14 @@ class Trainer:
                 avg_step_time = interval_time / interval_steps
                 tokens_per_sec = interval_tokens / interval_time if interval_time > 0 else 0.0
                 current_lr = float(self._scheduler.get_last_lr()[0])
-                self._tracker.log_metrics(
-                    {
-                        "train/loss": avg_loss,
-                        "train/lr": current_lr,
-                    },
-                    step=step,
-                )
+                if self._is_main:
+                    self._tracker.log_metrics(
+                        {
+                            "train/loss": avg_loss,
+                            "train/lr": current_lr,
+                        },
+                        step=step,
+                    )
                 logger.info(
                     "step=%d/%d  loss=%.4f  lr=%.6e  tokens_per_sec=%.1f  step_time=%.4fs",
                     step,
@@ -364,7 +375,8 @@ class Trainer:
                 eval_metrics = self._evaluate()
                 if eval_metrics:
                     final_val_metrics = eval_metrics
-                    self._tracker.log_metrics(eval_metrics, step=step)
+                    if self._is_main:
+                        self._tracker.log_metrics(eval_metrics, step=step)
                     metrics_parts = "  ".join(
                         f"{key}={value:.4f}" for key, value in sorted(eval_metrics.items())
                     )
