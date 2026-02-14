@@ -275,6 +275,7 @@ environment variables that `torchrun` would provide.
 | `k8s/service.yaml` | Headless Service (`clusterIP: None`) for DNS-based peer discovery |
 | `k8s/job.yaml` | IndexedJob manifest (`parallelism=2`, `completions=2`) |
 | `k8s/entrypoint.sh` | Shell script: derives DDP env vars and launches training |
+| `k8s/dashboard-admin.yaml` | ServiceAccount + ClusterRoleBinding for K8s Dashboard login |
 | `k8s/test_e2e.sh` | End-to-end test script (not run by `make test`) |
 
 ### Artifacts and output
@@ -304,6 +305,36 @@ Common failure modes:
 - **WORLD_SIZE mismatch**: The Job's `completions`/`parallelism` must match the `WORLD_SIZE` env var.
 - **RBAC 403 Forbidden**: The ServiceAccount lacks get/list permissions on pods.
 - **DNS issues**: Headless Service label selector (`app: llmtrain`) doesn't match pod labels. Verify with `kubectl get endpoints`.
+
+### Kubernetes Dashboard (optional)
+
+A web UI for inspecting pods, logs, events, and resource status inside the Kind
+cluster. Useful for watching IndexedJob training pods in real time.
+
+**Deploy, get a token, and start the proxy -- all in one command:**
+
+```bash
+make k8s-dashboard
+```
+
+This installs the official [Kubernetes Dashboard](https://github.com/kubernetes/dashboard)
+(v2.7.0), creates a `dashboard-admin` ServiceAccount with cluster-admin
+privileges (local-only -- never use this on a real cluster), prints a Bearer
+token, and starts `kubectl proxy` on `:8001`.
+
+Copy the token from the output, then open:
+
+```
+http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/
+```
+
+Paste the token on the login screen and you're in.
+
+**Tear down:**
+
+```bash
+make k8s-dashboard-delete
+```
 
 ## Config structure (v0.5)
 Configs are YAML files validated by Pydantic with strict fields. Example presets live in `configs/presets/`.
@@ -351,6 +382,7 @@ When running `train`, a run directory is created under `output.root_dir`:
   - `kind-config.yaml`: local cluster spec
   - `rbac.yaml`, `configmap.yaml`, `service.yaml`, `job.yaml`: K8s resources
   - `entrypoint.sh`: DDP env var bootstrap for IndexedJob pods
+  - `dashboard-admin.yaml`: ServiceAccount for K8s Dashboard login
   - `test_e2e.sh`: end-to-end K8s test script
 - `tests/`: pytest suite (includes CLI smoke)
 - `pyproject.toml`: project + tool config (ruff, mypy, pytest)
