@@ -325,9 +325,10 @@ class TestRank0OnlyIO:
     ``ddp_state.is_main``."""
 
     def test_tracker_not_called_on_non_main_rank(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When ``ddp_state.is_main`` is False, ``tracker.log_params`` must
-        not be called, and only rank-suffixed metrics are logged (no global
-        keys like ``train/loss`` or ``val/loss``)."""
+        """When ``ddp_state.is_main`` is False, the tracker must never be
+        called — non-main ranks receive ``NullTracker`` in production, and
+        ``_gather_scalars`` returns ``None`` so the trainer never invokes
+        ``log_metrics`` on non-main ranks."""
         port = _free_port()
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")
@@ -341,15 +342,18 @@ class TestRank0OnlyIO:
         tracker = Mock()
         ddp_state = DDPState(rank=1, world_size=2, local_rank=1, is_main=False)
         trainer = Trainer(cfg, tracker=tracker, ddp_state=ddp_state)
+
+        # Mock dist primitives to avoid world_size mismatch with single-process PG.
+        def _fake_all_gather(gathered: list[torch.Tensor], local: torch.Tensor) -> None:
+            gathered[0].copy_(local)
+
+        monkeypatch.setattr(dist, "all_gather", _fake_all_gather)
+        monkeypatch.setattr(dist, "all_reduce", lambda t, op=None: None)
+
         trainer.fit(max_steps_override=2)
 
         tracker.log_params.assert_not_called()
-        # Non-main ranks now log per-rank metrics but must NOT log global keys.
-        tracker.log_metrics.assert_called()
-        for call in tracker.log_metrics.call_args_list:
-            metrics_dict = call[0][0]
-            for key in metrics_dict:
-                assert "_rank_" in key, f"Non-main rank logged global metric key: {key}"
+        tracker.log_metrics.assert_not_called()
 
     def test_tracker_called_on_main_rank(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When ``ddp_state.is_main`` is True, ``tracker.log_params`` and
@@ -367,6 +371,15 @@ class TestRank0OnlyIO:
         tracker = Mock()
         ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
         trainer = Trainer(cfg, tracker=tracker, ddp_state=ddp_state)
+
+        # Mock dist primitives to avoid world_size mismatch with single-process PG.
+        def _fake_all_gather(gathered: list[torch.Tensor], local: torch.Tensor) -> None:
+            gathered[0].copy_(local)
+            del gathered[1:]
+
+        monkeypatch.setattr(dist, "all_gather", _fake_all_gather)
+        monkeypatch.setattr(dist, "all_reduce", lambda t, op=None: None)
+
         trainer.fit(max_steps_override=2)
 
         tracker.log_params.assert_called_once()
@@ -392,6 +405,14 @@ class TestRank0OnlyIO:
 
         ddp_state = DDPState(rank=1, world_size=2, local_rank=1, is_main=False)
         trainer = Trainer(cfg, run_dir=run_dir, ddp_state=ddp_state)
+
+        # Mock dist primitives to avoid world_size mismatch with single-process PG.
+        def _fake_all_gather(gathered: list[torch.Tensor], local: torch.Tensor) -> None:
+            gathered[0].copy_(local)
+
+        monkeypatch.setattr(dist, "all_gather", _fake_all_gather)
+        monkeypatch.setattr(dist, "all_reduce", lambda t, op=None: None)
+
         trainer.fit(max_steps_override=2)
 
         ckpt_dir = run_dir / "checkpoints"
@@ -418,6 +439,15 @@ class TestRank0OnlyIO:
 
         ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
         trainer = Trainer(cfg, run_dir=run_dir, ddp_state=ddp_state)
+
+        # Mock dist primitives to avoid world_size mismatch with single-process PG.
+        def _fake_all_gather(gathered: list[torch.Tensor], local: torch.Tensor) -> None:
+            gathered[0].copy_(local)
+            del gathered[1:]
+
+        monkeypatch.setattr(dist, "all_gather", _fake_all_gather)
+        monkeypatch.setattr(dist, "all_reduce", lambda t, op=None: None)
+
         trainer.fit(max_steps_override=2)
 
         ckpt_dir = run_dir / "checkpoints"
@@ -470,7 +500,12 @@ class TestMetricKeyNaming:
                 assert "_rank_" not in key, f"Non-DDP run logged rank-suffixed key: {key}"
 
     def test_rank_suffix_and_global_keys_under_ddp(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Under DDP (rank 0), both rank-suffixed and global keys must appear."""
+        """Under DDP (rank 0), both rank_0-suffixed and global keys must appear.
+
+        The actual process group has world_size=1 (single process), so we
+        mock ``dist.all_gather`` to simulate a single-rank gather.  We
+        therefore expect ``_rank_0`` keys but *no* ``_rank_1`` keys.
+        """
         port = _free_port()
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")
@@ -484,6 +519,15 @@ class TestMetricKeyNaming:
         tracker = Mock()
         ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
         trainer = Trainer(cfg, tracker=tracker, ddp_state=ddp_state)
+
+        # Mock dist primitives: simulate a world_size=1 gather (only rank 0).
+        def _fake_all_gather(gathered: list[torch.Tensor], local: torch.Tensor) -> None:
+            gathered[0].copy_(local)
+            del gathered[1:]  # trim to single-rank result
+
+        monkeypatch.setattr(dist, "all_gather", _fake_all_gather)
+        monkeypatch.setattr(dist, "all_reduce", lambda t, op=None: None)
+
         trainer.fit(max_steps_override=2)
 
         all_keys: set[str] = set()
@@ -491,17 +535,21 @@ class TestMetricKeyNaming:
             metrics_dict = call[0][0]
             all_keys.update(metrics_dict.keys())
 
-        rank_keys = {k for k in all_keys if "_rank_0" in k}
+        rank_0_keys = {k for k in all_keys if "_rank_0" in k}
+        rank_1_keys = {k for k in all_keys if "_rank_1" in k}
         global_keys = {k for k in all_keys if "_rank_" not in k}
 
-        assert rank_keys, f"Expected rank-suffixed keys, got: {all_keys}"
+        assert rank_0_keys, f"Expected rank_0-suffixed keys, got: {all_keys}"
         assert global_keys, f"Expected global keys, got: {all_keys}"
         # Verify specific expected keys are present.
-        assert "train/loss_rank_0" in rank_keys
+        assert "train/loss_rank_0" in rank_0_keys
         assert "train/loss" in global_keys
+        # Single-rank gather: no rank_1 keys should be present.
+        assert not rank_1_keys, f"Unexpected rank_1 keys in world_size=1 group: {rank_1_keys}"
 
     def test_non_main_only_logs_rank_suffixed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Non-main rank must only log rank-suffixed metrics, never global."""
+        """Non-main rank must never call the tracker at all — _gather_scalars
+        returns None for non-main ranks, so no log_metrics calls happen."""
         port = _free_port()
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")
@@ -515,13 +563,81 @@ class TestMetricKeyNaming:
         tracker = Mock()
         ddp_state = DDPState(rank=1, world_size=2, local_rank=1, is_main=False)
         trainer = Trainer(cfg, tracker=tracker, ddp_state=ddp_state)
+
+        # Mock dist primitives to avoid world_size mismatch with single-process PG.
+        def _fake_all_gather(gathered: list[torch.Tensor], local: torch.Tensor) -> None:
+            gathered[0].copy_(local)
+
+        monkeypatch.setattr(dist, "all_gather", _fake_all_gather)
+        monkeypatch.setattr(dist, "all_reduce", lambda t, op=None: None)
+
         trainer.fit(max_steps_override=2)
 
         tracker.log_params.assert_not_called()
+        tracker.log_metrics.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _gather_scalars mock tests (multi-rank simulation)
+# ---------------------------------------------------------------------------
+
+
+class TestGatherScalars:
+    """Test _gather_scalars with mocked dist.all_gather to simulate a
+    multi-rank world without spawning extra processes."""
+
+    def test_gather_scalars_collects_all_ranks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mock ``dist.all_gather`` to simulate a 2-rank world and verify
+        that ``_gather_scalars`` returns per-rank data and ``fit()`` logs
+        metric keys for both rank_0 and rank_1."""
+        # Set up a real single-process group so DDP wrapping succeeds.
+        port = _free_port()
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", str(port))
+
+        cfg = _minimal_run_config()
+        setup_ddp(cfg)
+
+        ddp_state = DDPState(rank=0, world_size=2, local_rank=0, is_main=True)
+        tracker = Mock()
+        trainer = Trainer(cfg, tracker=tracker, ddp_state=ddp_state)
+
+        # -- Mock dist primitives to simulate 2 ranks --
+        def fake_all_gather(gathered: list[torch.Tensor], local: torch.Tensor) -> None:
+            """Fill gathered[0] with local data, gathered[1] with shifted values."""
+            gathered[0].copy_(local)
+            gathered[1].copy_(local + 0.5)
+
+        def fake_all_reduce(tensor: torch.Tensor, op: Any = None) -> None:
+            """Simulate SUM across 2 identical ranks."""
+            tensor.mul_(2)
+
+        monkeypatch.setattr(dist, "all_gather", fake_all_gather)
+        monkeypatch.setattr(dist, "all_reduce", fake_all_reduce)
+
+        # --- Part 1: Direct _gather_scalars unit test ---
+        result = trainer._gather_scalars(loss=1.5, lr=0.001)
+        assert result is not None
+        assert len(result) == 2
+        assert result[0] == {"loss": pytest.approx(1.5), "lr": pytest.approx(0.001)}
+        assert result[1] == {"loss": pytest.approx(2.0), "lr": pytest.approx(0.501)}
+
+        # --- Part 2: Full fit() integration ---
+        trainer.fit(max_steps_override=2)
+
+        all_keys: set[str] = set()
         for call in tracker.log_metrics.call_args_list:
             metrics_dict = call[0][0]
-            for key in metrics_dict:
-                assert "_rank_1" in key, f"Non-main rank logged global metric key: {key}"
+            all_keys.update(metrics_dict.keys())
+
+        # Both rank_0 and rank_1 per-rank keys must be present.
+        assert "train/loss_rank_0" in all_keys, f"Missing rank_0 key; got: {all_keys}"
+        assert "train/loss_rank_1" in all_keys, f"Missing rank_1 key; got: {all_keys}"
+        # Global aggregated keys must also be present.
+        assert "train/loss" in all_keys, f"Missing global key; got: {all_keys}"
 
 
 # ---------------------------------------------------------------------------
