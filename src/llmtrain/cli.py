@@ -243,32 +243,11 @@ def _handle_train(args: argparse.Namespace) -> int:
         _emit_config_error(ConfigLoadError(str(exc)), json_output=args.json)
         return 2
 
-    # Every rank needs a real tracker so per-rank metrics are recorded.
-    # Rank 0 creates the MLflow run; other ranks join it via the run_id.
-    _ddp_active = ddp_state is not None and ddp_state.world_size > 1
-    tracker: Tracker = _create_tracker(config, logger)
+    # Only rank 0 gets a real tracker; non-main ranks use NullTracker
+    # to avoid concurrent SQLite writes in DDP mode.
+    tracker: Tracker = _create_tracker(config, logger) if is_main else NullTracker()
     try:
-        if _ddp_active:
-            import torch.distributed as dist
-
-            obj_list: list[str | None] = [None]
-            if is_main:
-                tracker.start_run(run_name=config.mlflow.run_name or run_id)
-                # Broadcast the MLflow run-id so workers join the same run.
-                obj_list[0] = (
-                    tracker.active_run_id  # type: ignore[attr-defined]
-                    if hasattr(tracker, "active_run_id")
-                    else None
-                )
-            dist.broadcast_object_list(obj_list, src=0)
-            if not is_main:
-                mlflow_run_id = obj_list[0]
-                if mlflow_run_id is not None:
-                    tracker.start_run(run_id=mlflow_run_id)
-                else:
-                    tracker.start_run(run_name=config.mlflow.run_name or run_id)
-        else:
-            tracker.start_run(run_name=config.mlflow.run_name or run_id)
+        tracker.start_run(run_name=config.mlflow.run_name or run_id)
 
         if args.dry_run:
             # --- Dry-run path (forward-only sanity check) ---

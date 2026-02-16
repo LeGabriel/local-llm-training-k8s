@@ -164,6 +164,33 @@ class Trainer:
         dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         return {k: float(v) for k, v in zip(keys, tensor, strict=True)}
 
+    def _gather_scalars(self, **scalars: float) -> list[dict[str, float]] | None:
+        """Gather per-rank scalars to rank 0 via all_gather.
+
+        Returns a list of dicts (one per rank) on rank 0, ``None`` on other
+        ranks.  Falls back to returning local-only data when dist is
+        unavailable or DDP is not active.
+        """
+        keys = list(scalars.keys())
+        local = torch.tensor([scalars[k] for k in keys], dtype=torch.float64)
+
+        # If DDP is not active, behave like a single-process gather.
+        if not self._is_ddp_active:
+            return [dict(scalars)]
+
+        # If DDP *should* be active but dist isn't ready, do not attempt to gather.
+        # Critically: never return a list on non-main ranks in this state, otherwise
+        # they might log metrics unexpectedly.
+        if not (dist.is_available() and dist.is_initialized()):
+            return [dict(scalars)] if self._is_main else None
+
+        gathered = [torch.zeros_like(local) for _ in range(self._world_size)]
+        dist.all_gather(gathered, local)
+
+        if not self._is_main:
+            return None
+        return [{k: float(v) for k, v in zip(keys, t, strict=True)} for t in gathered]
+
     def restore(self, payload: CheckpointPayload) -> int:
         """Restore model, optimizer, scheduler, and RNG states from a checkpoint payload.
 
@@ -399,18 +426,26 @@ class Trainer:
                 current_lr = float(self._scheduler.get_last_lr()[0])
 
                 if self._is_ddp_active:
-                    # -- Per-rank metrics (every rank logs its own shard) --
-                    rank = self._rank
-                    self._tracker.log_metrics(
-                        {
-                            f"train/loss_rank_{rank}": avg_loss,
-                            f"train/lr_rank_{rank}": current_lr,
-                            f"train/tokens_per_sec_rank_{rank}": tokens_per_sec,
-                            f"train/step_time_sec_rank_{rank}": avg_step_time,
-                            f"train/tokens_total_rank_{rank}": float(total_tokens_local),
-                        },
-                        step=step,
+                    # -- Per-rank metrics gathered to rank 0 --
+                    per_rank = self._gather_scalars(
+                        avg_loss=avg_loss,
+                        lr=current_lr,
+                        tokens_per_sec=tokens_per_sec,
+                        step_time=avg_step_time,
+                        tokens_total=float(total_tokens_local),
                     )
+                    if per_rank is not None:
+                        for r, rank_data in enumerate(per_rank):
+                            self._tracker.log_metrics(
+                                {
+                                    f"train/loss_rank_{r}": rank_data["avg_loss"],
+                                    f"train/lr_rank_{r}": rank_data["lr"],
+                                    f"train/tokens_per_sec_rank_{r}": rank_data["tokens_per_sec"],
+                                    f"train/step_time_sec_rank_{r}": rank_data["step_time"],
+                                    f"train/tokens_total_rank_{r}": rank_data["tokens_total"],
+                                },
+                                step=step,
+                            )
                     # -- Global reduced metrics (rank 0 only) --
                     reduced = self._reduce_metrics(
                         loss_sum=interval_loss_sum,
@@ -466,11 +501,16 @@ class Trainer:
                 if eval_result is not None:
                     local_val, global_val = eval_result
 
-                    # Per-rank validation metrics under DDP.
+                    # Per-rank validation metrics under DDP (gathered to rank 0).
                     if self._is_ddp_active:
-                        rank = self._rank
-                        rank_metrics = {f"{k}_rank_{rank}": v for k, v in local_val.items()}
-                        self._tracker.log_metrics(rank_metrics, step=step)
+                        local_val_loss = local_val.get("val/loss", 0.0)
+                        per_rank = self._gather_scalars(val_loss=local_val_loss)
+                        if per_rank is not None:
+                            for r, rank_data in enumerate(per_rank):
+                                self._tracker.log_metrics(
+                                    {f"val/loss_rank_{r}": rank_data["val_loss"]},
+                                    step=step,
+                                )
 
                     # Global validation metrics (rank 0 under DDP, or main otherwise).
                     if self._is_main:
