@@ -2,3 +2,8 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+    extraMounts:
+      - hostPath: ./runs
+        containerPath: /mnt/host-runs
+      - hostPath: ./mlflow-k8s
+        containerPath: /mnt/host-mlflow-k8s
