@@ -32,7 +32,17 @@ spec:
             - name: config
               mountPath: /config
               readOnly: true
+            - name: runs
+              mountPath: /app/runs
+            - name: mlflow
+              mountPath: /mlflow
       volumes:
         - name: config
           configMap:
             name: llmtrain-config
+        - name: runs
+          persistentVolumeClaim:
+            claimName: runs-pvc
+        - name: mlflow
+          persistentVolumeClaim:
+            claimName: mlflow-pvc
