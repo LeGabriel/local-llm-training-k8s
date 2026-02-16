@@ -1,6 +1,7 @@
 .PHONY: format lint test train-ddp train-gpt-ddp mlflow \
        k8s-cluster k8s-cluster-delete \
        k8s-build k8s-train k8s-logs k8s-clean k8s-full \
+       k8s-mlflow \
        k8s-dashboard k8s-dashboard-delete
 
 format:
@@ -27,6 +28,7 @@ mlflow:
 # ---------------------------------------------------------------------------
 
 k8s-cluster:
+	mkdir -p runs mlflow-k8s
 	kind create cluster --name llmtrain --config k8s/kind-config.yaml
 
 k8s-cluster-delete:
@@ -37,16 +39,19 @@ k8s-build:
 	kind load docker-image llmtrain:dev --name llmtrain
 
 k8s-train:
-	kubectl apply -f k8s/rbac.yaml -f k8s/configmap.yaml -f k8s/service.yaml -f k8s/job.yaml
+	kubectl apply -f k8s/rbac.yaml -f k8s/storage.yaml -f k8s/configmap.yaml -f k8s/service.yaml -f k8s/job.yaml
 	kubectl wait --for=condition=complete --timeout=300s job/llmtrain
 
 k8s-logs:
 	kubectl logs -l app=llmtrain --all-containers --prefix
 
 k8s-clean:
-	kubectl delete -f k8s/job.yaml -f k8s/service.yaml -f k8s/configmap.yaml -f k8s/rbac.yaml --ignore-not-found
+	kubectl delete -f k8s/job.yaml -f k8s/service.yaml -f k8s/configmap.yaml -f k8s/storage.yaml -f k8s/rbac.yaml --ignore-not-found
 
 k8s-full: k8s-cluster k8s-build k8s-train k8s-logs
+
+k8s-mlflow:
+	uv run mlflow ui --backend-store-uri sqlite:///mlflow-k8s/mlflow.db
 
 # ---------------------------------------------------------------------------
 # Kubernetes Dashboard
