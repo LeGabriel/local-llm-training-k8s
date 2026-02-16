@@ -54,15 +54,15 @@ data:
       master_addr: null
       master_port: null
     mlflow:
-      enabled: false
-      tracking_uri: "file:./mlruns"
+      enabled: true
+      tracking_uri: "sqlite:////mlflow/mlflow.db"
       experiment: "llm-train-k8s"
       run_name: null
       log_models: false
     logging:
       level: "INFO"
       json_output: true
-      log_to_file: false
+      log_to_file: true
       file_name: "train.log"
     output:
       root_dir: "/app/runs"
