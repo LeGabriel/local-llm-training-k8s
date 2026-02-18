@@ -213,6 +213,7 @@ __marimo__/
 
 #MLflow
 mlruns/
+mlflow-k8s/
 mlflow.db
 mlflow.db-shm
 mlflow.db-wal

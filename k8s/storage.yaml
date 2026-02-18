@@ -17,6 +17,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: runs-pvc
 spec:
+  volumeName: runs-pv
   accessModes:
     - ReadWriteOnce
   storageClassName: ""
@@ -43,6 +44,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: mlflow-pvc
 spec:
+  volumeName: mlflow-pv
   accessModes:
     - ReadWriteOnce
   storageClassName: ""
