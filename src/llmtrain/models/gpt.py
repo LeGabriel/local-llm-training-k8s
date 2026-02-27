@@ -252,22 +252,20 @@ class GPTAdapter(ModelAdapter):
                 )
 
         logits = model(input_ids, attention_mask=attention_mask)
-        shifted_logits = logits[:, :-1, :]
-        shifted_labels = labels[:, 1:]
 
         loss_per_token = nn.functional.cross_entropy(
-            shifted_logits.reshape(-1, shifted_logits.size(-1)),
-            shifted_labels.reshape(-1),
+            logits.reshape(-1, logits.size(-1)),
+            labels.reshape(-1),
             reduction="none",
         )
 
         if attention_mask is None:
             loss = loss_per_token.mean()
         else:
-            token_mask = attention_mask[:, 1:].to(dtype=torch.bool).reshape(-1)
+            token_mask = attention_mask.to(dtype=torch.bool).reshape(-1)
             valid_count = int(token_mask.sum().item())
             if valid_count == 0:
-                raise ValueError("attention_mask has no valid target tokens after shift.")
+                raise ValueError("attention_mask has no valid target tokens.")
             loss = loss_per_token[token_mask].mean()
 
         return loss, {"loss": float(loss.item())}

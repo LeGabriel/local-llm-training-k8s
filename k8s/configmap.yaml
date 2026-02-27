@@ -6,24 +6,23 @@ data:
   train.yaml: |
     schema_version: 1
     run:
-      name: "k8s-ddp-smoke"
-      seed: 123
+      name: "k8s-ddp-gpt-wikitext"
+      seed: 42
       device: "cpu"
       deterministic: true
-      notes: "K8s IndexedJob DDP smoke test — 2 pods, 10 steps, gloo backend."
+      notes: "K8s IndexedJob DDP — GPT on WikiText-2, 2 pods, gloo backend."
     model:
-      name: "dummy_gpt"
+      name: "gpt"
       init: "random"
-      block_size: 32
-      d_model: 64
-      n_layers: 2
-      n_heads: 2
-      d_ff: 128
-      dropout: 0.0
+      block_size: 128
+      d_model: 256
+      n_layers: 6
+      n_heads: 8
+      d_ff: 1024
+      dropout: 0.1
       tie_embeddings: true
-      vocab_size: 256
     data:
-      name: "dummy_text"
+      name: "hf_text"
       cache_dir: ".cache/datasets"
       num_workers: 0
       train_split: "train"
@@ -32,16 +31,16 @@ data:
       dataset_config: "wikitext-2-raw-v1"
       text_column: "text"
     trainer:
-      max_steps: 10
+      max_steps: 200
       micro_batch_size: 2
-      grad_accum_steps: 2
-      lr: 0.0003
-      weight_decay: 0.0
-      warmup_steps: 2
+      grad_accum_steps: 4
+      lr: 0.0005
+      weight_decay: 0.1
+      warmup_steps: 10
       max_grad_norm: 1.0
       log_every_steps: 5
-      eval_every_steps: 5
-      save_every_steps: 10
+      eval_every_steps: 20
+      save_every_steps: 200
     ddp:
       enabled: true
       backend: "gloo"
@@ -54,15 +53,15 @@ data:
       master_addr: null
       master_port: null
     mlflow:
-      enabled: false
-      tracking_uri: "file:./mlruns"
+      enabled: true
+      tracking_uri: "sqlite:////mlflow/mlflow.db"
       experiment: "llm-train-k8s"
-      run_name: null
+      run_name: "k8s-gpt-wikitext-ddp"
       log_models: false
     logging:
       level: "INFO"
       json_output: true
-      log_to_file: false
+      log_to_file: true
       file_name: "train.log"
     output:
       root_dir: "/app/runs"

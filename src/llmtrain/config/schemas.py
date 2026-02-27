@@ -10,7 +10,7 @@ class RunSectionConfig(BaseModel):
 
     name: str
     seed: int = 1337
-    device: Literal["cpu"] = "cpu"
+    device: Literal["cpu", "mps"] = "cpu"
     deterministic: bool = True
     notes: str | None = None
 

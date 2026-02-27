@@ -34,7 +34,8 @@ cleanup() {
     if [ "$CLEANUP" = true ]; then
         info "Cleaning up ..."
         kubectl delete -f k8s/job.yaml -f k8s/service.yaml \
-            -f k8s/configmap.yaml -f k8s/rbac.yaml --ignore-not-found 2>/dev/null || true
+            -f k8s/configmap.yaml -f k8s/storage.yaml \
+            -f k8s/rbac.yaml --ignore-not-found 2>/dev/null || true
         kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
         info "Cleanup complete."
     else
@@ -46,6 +47,7 @@ cleanup() {
 # 1. Create kind cluster (reuse if it already exists)
 # ---------------------------------------------------------------------------
 info "Step 1: Ensuring kind cluster '$CLUSTER_NAME' exists ..."
+mkdir -p runs mlflow-k8s
 if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
     info "Cluster '$CLUSTER_NAME' already exists — reusing."
 else
@@ -71,9 +73,10 @@ kind load docker-image "$IMAGE_NAME" --name "$CLUSTER_NAME"
 info "Step 3: Applying K8s manifests ..."
 
 # Clean up any prior run to avoid conflicts.
-kubectl delete -f k8s/job.yaml --ignore-not-found 2>/dev/null || true
+kubectl delete -f k8s/job.yaml -f k8s/storage.yaml --ignore-not-found 2>/dev/null || true
 
 kubectl apply -f k8s/rbac.yaml \
+              -f k8s/storage.yaml \
               -f k8s/configmap.yaml \
               -f k8s/service.yaml \
               -f k8s/job.yaml
@@ -151,7 +154,39 @@ if [ -f /tmp/llmtrain_e2e_fail ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Final result
+# 7. Assert host-persisted artifacts exist (runs/ and mlflow-k8s/)
+# ---------------------------------------------------------------------------
+info "Step 7: Asserting host-persisted artifacts ..."
+
+# runs/ should contain at least one run subdirectory.
+RUN_DIRS=$(find ./runs -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+if [ -n "$RUN_DIRS" ]; then
+    info "  PASS: ./runs/ contains run subdirectories."
+    # Pick the first run dir and check for expected artifacts.
+    FIRST_RUN=$(echo "$RUN_DIRS" | head -n 1)
+    for artifact in "checkpoints" "logs/train.log" "config.yaml" "meta.json"; do
+        if [ -e "$FIRST_RUN/$artifact" ]; then
+            info "  PASS: $FIRST_RUN/$artifact exists."
+        else
+            error "  FAIL: $FIRST_RUN/$artifact does NOT exist."
+            ASSERT_PASS=false
+        fi
+    done
+else
+    error "  FAIL: ./runs/ contains no run subdirectories."
+    ASSERT_PASS=false
+fi
+
+# mlflow-k8s/mlflow.db should exist and be non-empty.
+if [ -s "./mlflow-k8s/mlflow.db" ]; then
+    info "  PASS: ./mlflow-k8s/mlflow.db exists and is non-empty."
+else
+    error "  FAIL: ./mlflow-k8s/mlflow.db is missing or empty."
+    ASSERT_PASS=false
+fi
+
+# ---------------------------------------------------------------------------
+# 8. Final result
 # ---------------------------------------------------------------------------
 echo ""
 if [ "$ASSERT_PASS" = true ]; then
