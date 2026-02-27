@@ -1,0 +1,64 @@
+schema_version: 1
+run:
+  name: "gpt-wikitext-local"
+  seed: 42
+  device: "mps"
+  deterministic: true
+  notes: "Local single-process GPT on WikiText-2 — no DDP, no checkpoints, focus on lowering loss."
+model:
+  name: "gpt"
+  init: "random"
+  block_size: 256
+  d_model: 384
+  n_layers: 12
+  n_heads: 8
+  d_ff: 1536
+  dropout: 0.1
+  tie_embeddings: true
+data:
+  name: "hf_text"
+  cache_dir: ".cache/datasets"
+  num_workers: 0
+  train_split: "train"
+  val_split: "validation"
+  dataset_name: "wikitext"
+  dataset_config: "wikitext-2-raw-v1"
+  text_column: "text"
+trainer:
+  max_steps: 1200
+  micro_batch_size: 16
+  grad_accum_steps: 1
+  lr: 0.0005
+  weight_decay: 0.1
+  warmup_steps: 120
+  max_grad_norm: 1.0
+  log_every_steps: 20
+  eval_every_steps: 200
+  save_every_steps: 9999
+ddp:
+  enabled: false
+  backend: "gloo"
+  init_method: "env://"
+  timeout_sec: 1800
+  find_unused_parameters: false
+  rank: null
+  world_size: null
+  local_rank: null
+  master_addr: null
+  master_port: null
+mlflow:
+  enabled: true
+  tracking_uri: "sqlite:///./mlflow.db"
+  experiment: "llm-train-local"
+  run_name: "gpt-wikitext-local-v1"
+  log_models: false
+logging:
+  level: "INFO"
+  json_output: true
+  log_to_file: false
+  file_name: "train.log"
+output:
+  root_dir: "runs"
+  run_id: null
+  save_config_copy: true
+  save_meta_json: true
