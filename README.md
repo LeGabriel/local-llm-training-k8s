@@ -1,12 +1,40 @@
 # local-llm-training-k8s
-Production-style distributed training framework for decoder-only transformers, running correctness-first CPU training on a local Kubernetes cluster via `kind` and IndexedJob.
 
-## Goal
-- Build a realistic, test-driven training stack for decoder-only GPT-style models.
-- Keep it modular: `ModelAdapter`, `DataModule`, and `Trainer` are contract-based.
-- Reach "one command" local K8s training with checkpoints, metrics, and reproducible runs.
+A correctness-first distributed training framework for decoder-only (GPT-style)
+transformers.
 
-## What exists today (v1.1)
+## Overview
+
+This project incrementally builds a production-style ML training stack:
+
+- Single-process CPU training
+- Gradient accumulation, checkpointing, and resume
+- Distributed Data Parallel (DDP) via `torchrun`
+- Multi-pod DDP on Kubernetes (`kind`) via IndexedJob
+- Persistent experiment tracking with MLflow (local + K8s-separated backends)
+- Deterministic, config-driven, test-validated execution
+
+The same training code runs locally, in multi-process DDP, and inside
+Kubernetes without modification.
+
+## Why
+
+Most tutorials show DDP, MLflow, or K8s in isolation. This project integrates
+them into one reproducible system with strict contracts, test coverage, and
+operational clarity. The goal is distributed systems correctness, not model
+benchmarking.
+
+## Engineering principles
+
+- Contract-based architecture (`ModelAdapter`, `DataModule`, `Trainer`)
+- Strict Pydantic configuration validation
+- Deterministic run directories (config + metadata snapshots)
+- Rank-aware checkpointing/logging in DDP
+- Single-writer MLflow logging under DDP (rank 0 only)
+- Integration tests for `torchrun` and real-data training
+- Infrastructure as code (K8s manifests + Make targets)
+
+## What exists today (v1.2)
 - Real decoder-only GPT model adapter (`gpt`) with causal self-attention.
 - Fast smoke-path model adapter (`dummy_gpt`) remains available.
 - GPT tokenizer wiring via `tiktoken` (`gpt2` encoding).
@@ -14,6 +42,8 @@ Production-style distributed training framework for decoder-only transformers, r
 - Real single-process training loop with gradient accumulation and LR schedule.
 - **Distributed Data Parallel (DDP)** multi-process training via `torchrun`.
 - **Kubernetes orchestration** via `kind` cluster and IndexedJob with multi-pod DDP.
+- **Persistent K8s artifacts** via host-mounted PVCs (`runs/` and `mlflow-k8s/`).
+- **K8s-separated MLflow backend** using SQLite at `./mlflow-k8s/mlflow.db`.
 - Checkpointing every `save_every_steps` with resume via `--resume`.
 - Periodic evaluation with `val/*` metrics and `final_val_loss` summary fields.
 - Config-driven CLI with strict validation and JSON output support.
@@ -26,8 +56,8 @@ Production-style distributed training framework for decoder-only transformers, r
 - **v0.8**: real GPT decoder model (causal attention).
 - **v0.9**: real data pipeline (HuggingFace datasets + tokenizer).
 - **v1.0**: Distributed Data Parallel on a single machine.
-- **v1.1**: Kubernetes `kind` + IndexedJob orchestration. **(current)**
-- **v1.2**: K8s runs persistence - checkpoints, run logs, and MLflow tracking back to the local host machine.
+- **v1.1**: Kubernetes `kind` + IndexedJob orchestration.
+- **v1.2**: K8s runs persistence - checkpoints, run logs, and MLflow tracking back to the local host machine. **(current)**
 
 ## Quickstart (v0.9 config-driven CLI)
 1) Install deps (uses `uv`):
@@ -206,6 +236,8 @@ framework runs multi-pod DDP training on a local machine, proving the K8s
 deployment model. The core application code requires **no changes** -- `setup_ddp()`
 already reads `RANK`, `WORLD_SIZE`, `LOCAL_RANK`, `MASTER_ADDR`, and `MASTER_PORT`
 from environment variables; the K8s manifests just set them differently.
+In this repo, `MASTER_ADDR` is resolved by `k8s/entrypoint.sh` via Kubernetes API
+pod lookup (`batch.kubernetes.io/job-completion-index=0`), not via service DNS.
 
 ### Prerequisites
 
@@ -242,102 +274,64 @@ make k8s-clean            # delete K8s resources (job, service, configmap, rbac)
 make k8s-cluster-delete   # tear down the kind cluster entirely
 ```
 
-### How it works — IndexedJob pattern
-
-The training workload is deployed as a Kubernetes
-[IndexedJob](https://kubernetes.io/docs/concepts/workloads/controllers/job/#completion-mode)
-with `completions: 2` and `parallelism: 2`. Each pod receives a unique
-`JOB_COMPLETION_INDEX` (0, 1, ...) from the IndexedJob controller.
-
-An entrypoint shell script (`k8s/entrypoint.sh`) bootstraps the DDP environment:
-
-1. Sets `RANK` and `LOCAL_RANK` from `JOB_COMPLETION_INDEX`.
-2. `WORLD_SIZE` and `MASTER_PORT` are static env vars defined in the Job spec.
-3. Resolves `MASTER_ADDR` dynamically:
-   - **Rank 0** uses its own pod IP (injected via the Kubernetes downward API as
-     `POD_IP`).
-   - **Non-zero ranks** query the Kubernetes API (using in-cluster ServiceAccount
-     credentials) to find the pod with completion index 0 and extract its `podIP`.
-     Retries with a short backoff until the rank-0 pod is available.
-4. Execs into `python -m llmtrain train --config /config/train.yaml`.
-
-The application code is completely unaware of Kubernetes -- it sees the same
-environment variables that `torchrun` would provide.
-
-### K8s manifest overview
-
-| File | Purpose |
-|------|---------|
-| `k8s/Dockerfile` | Container image: `python:3.11-slim` with the package + `curl`/`jq` |
-| `k8s/kind-config.yaml` | Single control-plane node cluster spec |
-| `k8s/rbac.yaml` | ServiceAccount + Role + RoleBinding (get/list pods for master discovery) |
-| `k8s/configmap.yaml` | Training config (`train.yaml`) embedded as a ConfigMap |
-| `k8s/service.yaml` | Headless Service (`clusterIP: None`) for DNS-based peer discovery |
-| `k8s/job.yaml` | IndexedJob manifest (`parallelism=2`, `completions=2`) |
-| `k8s/entrypoint.sh` | Shell script: derives DDP env vars and launches training |
-| `k8s/dashboard-admin.yaml` | ServiceAccount + ClusterRoleBinding for K8s Dashboard login |
-| `k8s/test_e2e.sh` | End-to-end test script (not run by `make test`) |
-
 ### Artifacts and output
 
 Only rank 0 writes checkpoints, config copies, metadata, and the JSON summary
-(unchanged from v1.0). Artifacts stay inside the rank-0 pod container under
-`/app/runs/` and can be retrieved via:
+(unchanged from v1.0). In v1.2, these artifacts are persisted to the host
+through PVC-backed mounts:
+
+- run artifacts: pod `/app/runs` -> host `./runs`
+- MLflow backend/artifacts: pod `/mlflow` -> host `./mlflow-k8s`
+
+This removes the need for `kubectl cp` for normal training inspection.
+
+## Kubernetes Persistent Artifacts + MLflow (v1.2)
+
+v1.2 adds host-backed persistence for K8s training outputs and keeps local-vs-K8s
+MLflow environments separated:
+
+- Host `./runs/` is mounted into the cluster and exposed to pods at `/app/runs`.
+- Host `./mlflow-k8s/` is mounted into the cluster and exposed to pods at `/mlflow`.
+- The K8s config enables MLflow with `sqlite:////mlflow/mlflow.db` and stores
+  artifacts under `/mlflow/artifacts`.
+- Local MLflow (`./mlflow.db`) remains independent from K8s MLflow
+  (`./mlflow-k8s/mlflow.db`).
+- Only rank 0 writes MLflow data (rank 1+ uses `NullTracker`), preserving
+  single-writer SQLite behavior in DDP.
+
+### What changed in v1.2
+
+- `k8s/kind-config.yaml`: adds `extraMounts` for `./runs` and `./mlflow-k8s`.
+- `k8s/storage.yaml`: adds `runs-pv/runs-pvc` and `mlflow-pv/mlflow-pvc`
+  (`hostPath`, `ReadWriteOnce`).
+- `k8s/job.yaml`: mounts `runs-pvc -> /app/runs` and `mlflow-pvc -> /mlflow`.
+- `k8s/configmap.yaml`: enables MLflow + file logging for K8s runs.
+- `Makefile`: wires `k8s/storage.yaml` into `k8s-train`/`k8s-clean`, creates host
+  dirs in `k8s-cluster`, and adds `k8s-mlflow`.
+- `k8s/test_e2e.sh`: applies storage resources and asserts host-side artifacts
+  (`runs/*` and `mlflow-k8s/mlflow.db`).
+
+### Quick usage
 
 ```bash
-kubectl cp <rank-0-pod>:/app/runs ./runs
+make k8s-full
+make k8s-mlflow
 ```
 
-Shared persistent volumes (PVCs) are out of scope for v1.1.
+Expected after training:
 
-### Debugging
+- `./runs/<run_id>/` contains checkpoints, logs, config, and metadata.
+- `./mlflow-k8s/mlflow.db` exists and is non-empty.
+- MLflow UI shows K8s experiment runs from the `mlflow-k8s` backend.
 
-```bash
-kubectl get pods -l app=llmtrain              # check pod status
-kubectl describe pod <pod-name>               # inspect events, env, mounts
-kubectl logs <pod-name>                       # read a specific pod's output
-kubectl logs -l app=llmtrain --prefix         # tail all training pods
-kubectl get endpoints llmtrain-headless       # verify headless Service endpoints
-```
+### Operational details
 
-Common failure modes:
-- **MASTER_ADDR resolution failure**: RBAC misconfiguration or rank-0 pod not yet running. Check `kubectl logs` for the entrypoint retry messages.
-- **WORLD_SIZE mismatch**: The Job's `completions`/`parallelism` must match the `WORLD_SIZE` env var.
-- **RBAC 403 Forbidden**: The ServiceAccount lacks get/list permissions on pods.
-- **DNS issues**: Headless Service label selector (`app: llmtrain`) doesn't match pod labels. Verify with `kubectl get endpoints`.
-
-### Kubernetes Dashboard (optional)
-
-A web UI for inspecting pods, logs, events, and resource status inside the Kind
-cluster. Useful for watching IndexedJob training pods in real time.
-
-**Deploy, get a token, and start the proxy -- all in one command:**
-
-```bash
-make k8s-dashboard
-```
-
-This installs the official [Kubernetes Dashboard](https://github.com/kubernetes/dashboard)
-(v2.7.0), creates a `dashboard-admin` ServiceAccount with cluster-admin
-privileges (local-only -- never use this on a real cluster), prints a Bearer
-token, and starts `kubectl proxy` on `:8001`.
-
-Copy the token from the output, then open:
-
-```
-http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/
-```
-
-Paste the token on the login screen and you're in.
-
-**Tear down:**
-
-```bash
-make k8s-dashboard-delete
-```
+For IndexedJob internals, manifest breakdown, dashboard usage, and debugging /
+failure modes, see `docs/k8s.md`.
 
 ## Config structure (v0.5)
 Configs are YAML files validated by Pydantic with strict fields. Example presets live in `configs/presets/`.
+Additional presets: `gpt_wikitext_ddp.yaml` (DDP + real data), `gpt_wikitext_better.yaml`, `dummy_smoke.yaml`.
 
 ```yaml
 schema_version: 1
@@ -376,15 +370,20 @@ When running `train`, a run directory is created under `output.root_dir`:
   - `distributed/`: DDP setup/teardown utilities and `DDPState`
   - `models/`: GPT + dummy model adapters
   - `data/`: HF real-text + dummy data modules
+  - `tracking/`: MLflow and null tracker implementations
   - `config/`, `registry/`, `utils/`: contracts and runtime plumbing
 - `k8s/`: Kubernetes manifests and tooling
   - `Dockerfile`: training container image
   - `kind-config.yaml`: local cluster spec
+  - `storage.yaml`: PV/PVC for host-backed runs and MLflow persistence
   - `rbac.yaml`, `configmap.yaml`, `service.yaml`, `job.yaml`: K8s resources
+    (`rbac.yaml` enables API-based rank-0 discovery used by `entrypoint.sh`)
   - `entrypoint.sh`: DDP env var bootstrap for IndexedJob pods
   - `dashboard-admin.yaml`: ServiceAccount for K8s Dashboard login
   - `test_e2e.sh`: end-to-end K8s test script
 - `tests/`: pytest suite (includes CLI smoke)
+- `docs/`: operational deep-dives and runbooks
+  - `k8s.md`: IndexedJob internals, manifests, dashboard, and debugging
 - `pyproject.toml`: project + tool config (ruff, mypy, pytest)
 - `.pre-commit-config.yaml`: ruff/mypy hooks
 - `Makefile`: `format`, `lint`, `test`, `k8s-*` targets
