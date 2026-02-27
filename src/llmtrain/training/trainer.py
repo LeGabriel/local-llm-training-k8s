@@ -80,7 +80,7 @@ class Trainer:
         self._train_loader = data_module.train_dataloader()
         self._val_loader = data_module.val_dataloader()
 
-        self._device = torch.device("cpu")
+        self._device = torch.device(cfg.run.device)
         self._model = self._model.to(self._device)
 
         # Wrap with DistributedDataParallel when DDP is active with >1 process.
